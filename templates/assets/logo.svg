@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title>Micropage starter logo</title>
+  <desc>Abstract stacked rectangles suggesting pages</desc>
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="14" width="44" height="12" rx="3" fill="url(#g)"/>
+  <rect x="14" y="28" width="36" height="10" rx="3" fill="#111827" opacity="0.9"/>
+  <rect x="18" y="40" width="28" height="8" rx="3" fill="#111827" opacity="0.7"/>
+</svg>
+

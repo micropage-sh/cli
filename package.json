@@ -1,0 +1,43 @@
+{
+  "name": "micropage",
+  "version": "2.0.0",
+  "description": "CLI for micropage.sh - create, sync, and publish microsites",
+  "main": "src/index.js",
+  "bin": {
+    "micropage": "./bin/micropage.js"
+  },
+  "scripts": {
+    "test": "node -e \"require('./src/index.js')\"",
+    "build:bin": "pkg . --targets node18-linux-x64,node18-macos-x64,node18-macos-arm64 --output dist/micropage",
+    "build:linux": "pkg . --target node18-linux-x64 --output dist/micropage-linux-amd64",
+    "build:macos-amd64": "pkg . --target node18-macos-x64 --output dist/micropage-darwin-amd64",
+    "build:macos-arm64": "pkg . --target node18-macos-arm64 --output dist/micropage-darwin-arm64"
+  },
+  "pkg": {
+    "scripts": [
+      "src/**/*.js",
+      "bin/**/*.js"
+    ],
+    "assets": [
+      "templates/**/*"
+    ],
+    "targets": [
+      "node18-linux-x64",
+      "node18-macos-x64",
+      "node18-macos-arm64"
+    ],
+    "outputPath": "dist"
+  },
+  "keywords": ["micropage", "cli", "microsite", "static-site"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.11.5"
+  }
+}

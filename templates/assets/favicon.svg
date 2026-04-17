@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-labelledby="title desc">
+  <title>Micropage favicon</title>
+  <desc>Minimal stacked bar favicon for starter projects</desc>
+  <rect x="4" y="7" width="24" height="4" rx="2" fill="#4f46e5"/>
+  <rect x="6" y="14" width="20" height="4" rx="2" fill="#0ea5e9"/>
+  <rect x="8" y="21" width="16" height="4" rx="2" fill="#22c55e"/>
+</svg>
+
