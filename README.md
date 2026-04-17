@@ -9,6 +9,15 @@ Command-line interface for [micropage.sh](https://app.micropage.sh) — create, 
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap micropage-sh/tap
+brew install micropage
+```
+
+### npm
+
 ```bash
 npm install -g micropage
 ```
@@ -22,8 +31,6 @@ micropage login        # opens browser for authentication
 micropage whoami       # show the currently logged-in user and subscription
 micropage logout       # clear the stored session
 ```
-
-The session (access + refresh tokens) is stored in `~/.micropage/config.json`. Tokens are automatically refreshed when they expire.
 
 ## Project workflow
 
@@ -174,13 +181,3 @@ Most list and detail commands accept a `--json` flag to output raw JSON, which i
 micropage projects list --json | jq '.[].name'
 micropage builds list --json | jq '.[] | select(.status == "deployed") | .number'
 ```
-
-## Environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `MICROPAGE_APP_URL` | `https://app.micropage.sh` | Web app base URL |
-| `MICROPAGE_SUPABASE_URL` | *(production)* | Supabase project URL |
-| `MICROPAGE_SUPABASE_ANON_KEY` | *(production)* | Supabase anon key |
-| `MICROPAGE_BUILD_COMPILER_URL` | `https://build-compiler.micropage.sh` | Build compiler API URL (`MICROPAGE_PARSER_URL` still supported) |
-
