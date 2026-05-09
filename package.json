@@ -1,11 +1,17 @@
 {
-  "name": "micropage",
+  "name": "@micropage-sh/cli",
   "version": "2.0.0",
   "description": "CLI for micropage.sh - create, sync, and publish microsites",
   "main": "src/index.js",
   "bin": {
     "micropage": "./bin/micropage.js"
   },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "README.md"
+  ],
   "scripts": {
     "test": "node -e \"require('./src/index.js')\"",
     "build:bin": "pkg . --targets node18-linux-x64,node18-macos-x64,node18-macos-arm64 --output dist/micropage",
@@ -29,7 +35,18 @@
     "outputPath": "dist"
   },
   "keywords": ["micropage", "cli", "microsite", "static-site"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/micropage-sh/cli.git"
+  },
+  "homepage": "https://github.com/micropage-sh/cli#readme",
+  "bugs": {
+    "url": "https://github.com/micropage-sh/cli/issues"
+  },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },
