@@ -4,7 +4,7 @@
   "description": "CLI for micropage.sh - create, sync, and publish microsites",
   "main": "src/index.js",
   "bin": {
-    "micropage": "./bin/micropage.js"
+    "micropage": "bin/micropage.js"
   },
   "files": [
     "bin",
@@ -34,10 +34,15 @@
     ],
     "outputPath": "dist"
   },
-  "keywords": ["micropage", "cli", "microsite", "static-site"],
+  "keywords": [
+    "micropage",
+    "cli",
+    "microsite",
+    "static-site"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/micropage-sh/cli.git"
+    "url": "git+https://github.com/micropage-sh/cli.git"
   },
   "homepage": "https://github.com/micropage-sh/cli#readme",
   "bugs": {
