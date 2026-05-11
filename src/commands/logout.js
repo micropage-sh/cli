@@ -9,8 +9,16 @@ function run() {
     return;
   }
   clearSession();
-  const email = session.user?.email || 'unknown';
-  console.log(`Logged out (was: ${email}).`);
+  const displayName = session.user?.email
+    || session.user?.user_metadata?.full_name
+    || session.user?.user_metadata?.user_name
+    || session.user?.user_metadata?.name
+    || session.user?.id;
+  if (displayName) {
+    console.log(`Logged out (was: ${displayName}).`);
+  } else {
+    console.log('Logged out.');
+  }
 }
 
 module.exports = { run };

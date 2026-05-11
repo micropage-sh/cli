@@ -2,9 +2,10 @@
 
 const http = require('http');
 const { randomBytes } = require('crypto');
-const { setSession, getSession } = require('../auth');
+const { setSession, getSession, clearSession } = require('../auth');
 const { getUserInfo, getValidAccessToken } = require('../supabase');
 const { APP_URL, SUPABASE_URL, SUPABASE_ANON_KEY } = require('../config');
+const { UPGRADE_MESSAGE, isPaidTier, getPlanTierWithToken } = require('../plan');
 
 // Find an available ephemeral port by briefly binding to port 0.
 function getFreePort() {
@@ -164,11 +165,24 @@ async function run(options = {}) {
     const existing = getSession();
     if (existing) {
       try {
-        await getValidAccessToken();
-        const email = existing.user?.email || 'unknown';
-        console.log(`Already logged in as ${email}.`);
-        console.log('Use --force to re-authenticate.');
-        return;
+        const accessToken = await getValidAccessToken();
+        const planTier = await getPlanTierWithToken(existing.user?.id, accessToken);
+        if (!isPaidTier(planTier)) {
+          clearSession();
+          console.error(UPGRADE_MESSAGE);
+          process.exit(1);
+        }
+        const displayName = existing.user?.email
+          || existing.user?.user_metadata?.full_name
+          || existing.user?.user_metadata?.user_name
+          || existing.user?.user_metadata?.name
+          || existing.user?.id;
+        if (displayName) {
+          console.log(`Already logged in as ${displayName}.`);
+          console.log('Use --force to re-authenticate.');
+          process.exit(0);
+        }
+        // No identifiable display name on the cached user — fall through to a fresh login.
       } catch {
         // Token expired or refresh failed — fall through to re-login
       }
@@ -240,10 +254,27 @@ async function run(options = {}) {
     server.close();
 
     const user = await getUserInfo(access_token);
+    if (!user?.id) {
+      console.error('Login failed: could not load user profile.');
+      process.exit(1);
+    }
+
+    const planTier = await getPlanTierWithToken(user.id, access_token);
+    if (!isPaidTier(planTier)) {
+      // Free-tier (or unconfirmed) users get no session at all.
+      console.error(UPGRADE_MESSAGE);
+      process.exit(1);
+    }
+
     setSession({ access_token, refresh_token, user });
 
-    const displayName = user?.email || user?.user_metadata?.user_name || 'unknown';
+    const displayName = user.email
+      || user.user_metadata?.full_name
+      || user.user_metadata?.user_name
+      || user.user_metadata?.name
+      || user.id;
     console.log(`Logged in as ${displayName}`);
+    process.exit(0);
   } catch (err) {
     clearTimeout(timeout);
     server.close();

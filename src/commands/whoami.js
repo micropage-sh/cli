@@ -1,7 +1,8 @@
 'use strict';
 
-const { getSession } = require('../auth');
+const { getSession, clearSession } = require('../auth');
 const { db, getUserInfo, getValidAccessToken, handleAuthError } = require('../supabase');
+const { UPGRADE_MESSAGE, isPaidTier } = require('../plan');
 
 async function run() {
   const session = getSession();
@@ -25,6 +26,28 @@ async function run() {
     process.exit(1);
   }
 
+  // Gate access on plan first — free-tier accounts get no session and no detail dump.
+  let planTier = 'free';
+  try {
+    const customer = await db
+      .from('customers')
+      .select('plan_tier')
+      .eq('user_id', user.id)
+      .single();
+    if (customer?.plan_tier === 'pro' || customer?.plan_tier === 'pro_plus') {
+      planTier = customer.plan_tier;
+    }
+  } catch (err) {
+    handleAuthError(err);
+    // If we cannot determine plan, default to free → deny CLI access below.
+  }
+
+  if (!isPaidTier(planTier)) {
+    clearSession();
+    console.error(UPGRADE_MESSAGE);
+    process.exit(1);
+  }
+
   console.log('User ID:   ', user.id);
   console.log('Email:     ', user.email || '-');
   const name =
@@ -37,23 +60,7 @@ async function run() {
     console.log('Auth via:  ', user.app_metadata.provider);
   }
 
-  // Billing / subscription overview (best-effort; do not fail whoami if this breaks).
-  let planTier = 'free';
   let subscription = null;
-  try {
-    const customer = await db
-      .from('customers')
-      .select('plan_tier')
-      .eq('user_id', user.id)
-      .single();
-    if (customer?.plan_tier) {
-      planTier = customer.plan_tier;
-    }
-  } catch (err) {
-    handleAuthError(err);
-    console.error('Warning: failed to load plan info:', err.message);
-  }
-
   try {
     const subs = await db
       .from('subscriptions')
