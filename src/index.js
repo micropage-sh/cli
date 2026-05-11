@@ -18,7 +18,7 @@ const program = new Command();
 program
   .name('micropage')
   .description('CLI for micropage.sh – create, sync, and publish microsites')
-  .version('2.0.0');
+  .version('2.0.1');
 
 // ---------------------------------------------------------------------------
 // Authentication

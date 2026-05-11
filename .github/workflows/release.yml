@@ -113,7 +113,15 @@ jobs:
           fi
           notarize_binary() {
             local f="$1"
-            codesign --sign "$CODESIGN_IDENTITY" --options runtime --timestamp --force "$f"
+            codesign --sign "$CODESIGN_IDENTITY" \
+                     --options runtime \
+                     --entitlements build/entitlements.plist \
+                     --timestamp \
+                     --force \
+                     "$f"
+            codesign -d --entitlements :- "$f" | grep -q "com.apple.security.cs.allow-jit" \
+              || { echo "JIT entitlement missing on $f" >&2; exit 1; }
+            codesign --verify --strict --verbose=2 "$f"
             (cd dist && zip -q "$(basename "$f").notarize.zip" "$(basename "$f")")
             xcrun notarytool submit "dist/$(basename "$f").notarize.zip" \
               --apple-id "$APPLE_ID" \
