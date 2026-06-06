@@ -257,13 +257,23 @@ const db = {
 // ---------------------------------------------------------------------------
 
 async function getUserInfo(accessToken) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: {
-      'apikey': SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${accessToken}`,
-    },
-  });
-  if (!res.ok) return null;
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+  } catch (err) {
+    console.error(`[micropage] getUserInfo network error: ${err.message}`);
+    return null;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    console.error(`[micropage] getUserInfo failed (HTTP ${res.status} from ${SUPABASE_URL}/auth/v1/user): ${body}`);
+    return null;
+  }
   return res.json();
 }
 

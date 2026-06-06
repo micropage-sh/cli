@@ -23,11 +23,9 @@ const { syncAssets } = require('./files');
 // Helpers
 // ---------------------------------------------------------------------------
 
-function projectUrl(host) {
-  if (!host) return '-';
-  if (host.startsWith('http://') || host.startsWith('https://')) return host;
-  return `https://${host}`;
-}
+const { projectUrl: buildProjectUrl } = require('../config');
+const projectUrl = (slug, customDomain) =>
+  buildProjectUrl(slug, customDomain) || '-';
 
 function copyIfExists(src, dest) {
   try {
@@ -145,7 +143,7 @@ async function list(options = {}) {
 
   const rows = projects.map((p) => {
     const build = latestBuild[p.id];
-    const url = projectUrl(p.custom_domain || p.domain);
+    const url = projectUrl(p.domain, p.custom_domain);
     return [
       p.uuid || '-',
       p.name || '-',
@@ -195,7 +193,7 @@ async function show(uuidOrDomain, options = {}) {
     return;
   }
 
-  const url = projectUrl(project.custom_domain || project.domain);
+  const url = projectUrl(project.domain, project.custom_domain);
 
   console.log('UUID:         ', project.uuid || '-');
   console.log('Name:         ', project.name || '-');
@@ -261,7 +259,7 @@ async function create(name, options = {}) {
 
   console.log('Created project:', project.name || name);
   if (project.uuid) console.log('UUID:', project.uuid);
-  console.log('URL:', projectUrl(project.domain));
+  console.log('URL:', projectUrl(project.domain, project.custom_domain));
   console.log('Folder:', dir);
   console.log(`\nNext: cd ${name} && touch landing.page && micropage push`);
 }

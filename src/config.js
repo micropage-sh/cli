@@ -19,4 +19,30 @@ const BUILD_COMPILER_URL =
   process.env.MICROPAGE_PARSER_URL ||
   'https://build-compiler.micropage.sh';
 
-module.exports = { SUPABASE_URL, SUPABASE_ANON_KEY, APP_URL, BUILD_COMPILER_URL };
+const BASE_DOMAIN = process.env.MICROPAGE_BASE_DOMAIN || 'micropage.sh';
+
+// Live URL for a project. Prefers the customer's custom domain (a full FQDN
+// like `www.example.com`) when set; falls back to `https://<slug>.<BASE_DOMAIN>`.
+// Returns null when there's no usable identifier.
+function projectUrl(slug, customDomain) {
+  const cd = customDomain && String(customDomain).trim();
+  if (cd) {
+    return cd.startsWith('http://') || cd.startsWith('https://')
+      ? cd
+      : `https://${cd}`;
+  }
+  if (!slug) return null;
+  const s = String(slug).trim();
+  if (!s) return null;
+  if (s.startsWith('http://') || s.startsWith('https://')) return s;
+  return `https://${s}.${BASE_DOMAIN}`;
+}
+
+module.exports = {
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  APP_URL,
+  BUILD_COMPILER_URL,
+  BASE_DOMAIN,
+  projectUrl,
+};

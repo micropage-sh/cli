@@ -3,13 +3,7 @@
 const { execSync } = require('child_process');
 const { db, handleAuthError } = require('../supabase');
 const { getProjectConfig } = require('../auth');
-const { APP_URL } = require('../config');
-
-function projectUrl(domain) {
-  if (!domain) return null;
-  if (domain.startsWith('http')) return domain;
-  return `https://${domain}.pages.dev`;
-}
+const { APP_URL, projectUrl } = require('../config');
 
 function copyToClipboard(text) {
   const cmds = [
@@ -41,7 +35,7 @@ async function getProject(cwd) {
   try {
     const project = await db
       .from('projects')
-      .select('id,name,domain')
+      .select('id,name,domain,custom_domain')
       .eq('id', config.projectId)
       .single();
     return project || config;
@@ -56,7 +50,7 @@ async function getProject(cwd) {
 async function preview() {
   const cwd = process.cwd();
   const project = await getProject(cwd);
-  const url = projectUrl(project.domain);
+  const url = projectUrl(project.domain, project.custom_domain);
 
   if (!url) {
     console.error('No domain set for this project. Publish first.');
@@ -76,7 +70,7 @@ async function preview() {
 async function copyLink() {
   const cwd = process.cwd();
   const project = await getProject(cwd);
-  const url = projectUrl(project.domain);
+  const url = projectUrl(project.domain, project.custom_domain);
 
   if (!url) {
     console.error('No domain set for this project. Publish first.');
