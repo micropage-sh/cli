@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title>Micropage starter logo — variant C</title>
+  <desc>Abstract leaf and root mark suggesting growth and earth</desc>
+  <circle cx="32" cy="20" r="14" fill="#166534"/>
+  <circle cx="32" cy="20" r="8" fill="#14532d"/>
+  <circle cx="32" cy="20" r="4" fill="#bbf7d0"/>
+  <rect x="30" y="34" width="4" height="14" rx="2" fill="#713f12"/>
+  <path d="M 20 48 Q 32 38 44 48" stroke="#713f12" stroke-width="3" fill="none" stroke-linecap="round"/>
+</svg>

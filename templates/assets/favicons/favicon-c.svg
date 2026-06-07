@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-labelledby="title desc">
+  <title>Micropage favicon — variant C</title>
+  <desc>Minimal concentric circles favicon in forest green</desc>
+  <circle cx="16" cy="14" r="10" fill="#166534"/>
+  <circle cx="16" cy="14" r="5" fill="#14532d"/>
+  <circle cx="16" cy="14" r="2" fill="#bbf7d0"/>
+  <rect x="14" y="24" width="4" height="6" rx="2" fill="#713f12"/>
+</svg>

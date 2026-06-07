@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-labelledby="title desc">
+  <title>Micropage favicon — variant B</title>
+  <desc>Minimal sunrise arc favicon</desc>
+  <defs>
+    <linearGradient id="g" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#dc2626"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <path d="M 4 22 A 12 12 0 0 1 28 22" stroke="url(#g)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <circle cx="16" cy="22" r="3" fill="#dc2626"/>
+</svg>

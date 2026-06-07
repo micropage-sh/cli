@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title>Micropage starter logo — variant B</title>
+  <desc>Abstract sunrise arc suggesting warmth and momentum</desc>
+  <defs>
+    <linearGradient id="g" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#dc2626"/>
+      <stop offset="50%" stop-color="#ea580c"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <path d="M 8 44 A 24 24 0 0 1 56 44" stroke="url(#g)" stroke-width="8" fill="none" stroke-linecap="round"/>
+  <circle cx="32" cy="44" r="5" fill="#dc2626"/>
+  <line x1="32" y1="14" x2="32" y2="22" stroke="#f59e0b" stroke-width="4" stroke-linecap="round"/>
+  <line x1="14" y1="26" x2="20" y2="30" stroke="#ea580c" stroke-width="3" stroke-linecap="round"/>
+  <line x1="50" y1="26" x2="44" y2="30" stroke="#ea580c" stroke-width="3" stroke-linecap="round"/>
+</svg>

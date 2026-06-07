@@ -47,26 +47,69 @@ function copyExamplesAndAssetsIntoProject(dir) {
     fs.mkdirSync(examplesDest, { recursive: true });
   }
 
-  // Copy example .page files
+  // Collect full-page templates (exclude components-* demo files) for the starter pick.
+  // All examples are still copied into examples/ for the user to browse.
+  const allExampleFiles = [];
+  const starterCandidates = [];
   try {
     const files = fs.readdirSync(examplesSrc);
     for (const file of files) {
       if (!file.endsWith('.page')) continue;
-      const src = path.join(examplesSrc, file);
-      const dest = path.join(examplesDest, file);
-      copyIfExists(src, dest);
+      allExampleFiles.push(file);
+      if (!file.startsWith('components-')) {
+        starterCandidates.push(file);
+      }
     }
   } catch {
     // ignore if templates/examples missing in this build
   }
 
-  // Default logo / favicon in assets/ (uploaded on push as logo.svg / favicon.svg; examples use `logo: <- logo.svg`)
+  for (const file of allExampleFiles) {
+    const src = path.join(examplesSrc, file);
+    const dest = path.join(examplesDest, file);
+    copyIfExists(src, dest);
+  }
+
+  // Write a randomized starter landing.page at the project root.
+  if (starterCandidates.length > 0) {
+    const pick = starterCandidates[Math.floor(Math.random() * starterCandidates.length)];
+    copyIfExists(path.join(examplesSrc, pick), path.join(dir, 'landing.page'));
+  }
+
+  // Logo / favicon in assets/ — pick a random variant pair from logos/ and favicons/.
+  // Falls back to the root logo.svg / favicon.svg if the variant directories are absent or empty.
   const destAssets = path.join(dir, 'assets');
   if (!fs.existsSync(destAssets)) {
     fs.mkdirSync(destAssets, { recursive: true });
   }
-  copyIfExists(path.join(assetsSrc, 'logo.svg'), path.join(destAssets, 'logo.svg'));
-  copyIfExists(path.join(assetsSrc, 'favicon.svg'), path.join(destAssets, 'favicon.svg'));
+
+  const logosDir = path.join(assetsSrc, 'logos');
+  const faviconsDir = path.join(assetsSrc, 'favicons');
+  let usedVariant = false;
+
+  try {
+    if (fs.existsSync(logosDir)) {
+      const logoFiles = fs.readdirSync(logosDir).filter((f) => /^logo-[^.]+\.svg$/.test(f));
+      if (logoFiles.length > 0) {
+        const chosen = logoFiles[Math.floor(Math.random() * logoFiles.length)];
+        // logo-x.svg -> favicon-x.svg
+        const variantId = chosen.replace(/^logo-/, '').replace(/\.svg$/, '');
+        const matchingFavicon = path.join(faviconsDir, `favicon-${variantId}.svg`);
+        if (fs.existsSync(matchingFavicon)) {
+          copyIfExists(path.join(logosDir, chosen), path.join(destAssets, 'logo.svg'));
+          copyIfExists(matchingFavicon, path.join(destAssets, 'favicon.svg'));
+          usedVariant = true;
+        }
+      }
+    }
+  } catch {
+    // fall through to default below
+  }
+
+  if (!usedVariant) {
+    copyIfExists(path.join(assetsSrc, 'logo.svg'), path.join(destAssets, 'logo.svg'));
+    copyIfExists(path.join(assetsSrc, 'favicon.svg'), path.join(destAssets, 'favicon.svg'));
+  }
 }
 
 async function getLatestBuild(projectId) {
@@ -261,7 +304,7 @@ async function create(name, options = {}) {
   if (project.uuid) console.log('UUID:', project.uuid);
   console.log('URL:', projectUrl(project.domain, project.custom_domain));
   console.log('Folder:', dir);
-  console.log(`\nNext: cd ${name} && touch landing.page && micropage push`);
+  console.log(`\nNext: cd ${name} && micropage push`);
 }
 
 // ---------------------------------------------------------------------------
