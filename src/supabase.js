@@ -644,4 +644,5 @@ module.exports = {
   exchangeDeployTokenForAccessToken,
   pushWithToken,
   invokePublishBuild,
+  uploadAssetsWithToken,
 };

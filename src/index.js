@@ -2,6 +2,7 @@
 'use strict';
 
 const { Command } = require('commander');
+const { version } = require('../package.json');
 
 const login = require('./commands/login');
 const logout = require('./commands/logout');
@@ -18,7 +19,7 @@ const program = new Command();
 program
   .name('micropage')
   .description('CLI for micropage.sh – create, sync, and publish microsites')
-  .version('2.0.3');
+  .version(version);
 
 // ---------------------------------------------------------------------------
 // Authentication

@@ -11,6 +11,7 @@ const {
   getValidAccessToken,
   getMaxDeployEventIdForBuild,
   streamDeployEventsUntilDone,
+  uploadAssetsWithToken,
 } = require('../supabase');
 const { getProjectConfig, setProjectConfig } = require('../auth');
 const { readPageFilesFromDir } = require('../parser');
@@ -136,6 +137,23 @@ async function push(options = {}) {
 
   if (!rawContent.trim()) {
     console.error('No content found in .page files.');
+    process.exit(1);
+  }
+
+  // Upload new files in assets/ to project Files before parsing,
+  // so `img: <- name` lookups can resolve against just-uploaded files.
+  try {
+    const accessToken = await getValidAccessToken();
+    const uploaded = await uploadAssetsWithToken(
+      accessToken,
+      config.projectId,
+      cwd,
+      (filename) => console.log(`Uploaded asset: ${filename}`),
+    );
+    if (uploaded > 0) console.log(`Uploaded ${uploaded} asset(s).`);
+  } catch (err) {
+    handleAuthError(err);
+    console.error('Asset upload failed:', err.message);
     process.exit(1);
   }
 
