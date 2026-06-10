@@ -48,18 +48,15 @@ function writePageFile(dir, content) {
   return dest;
 }
 
-const ASSET_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg'];
-
 function listAssetsFromDir(dir) {
   const assetsDir = path.join(dir, 'assets');
   if (!fs.existsSync(assetsDir)) return [];
   const entries = fs.readdirSync(assetsDir, { withFileTypes: true });
   const files = [];
   for (const e of entries) {
-    if (e.isFile()) {
-      const ext = path.extname(e.name).toLowerCase();
-      if (ASSET_EXTENSIONS.includes(ext)) files.push(e.name);
-    }
+    if (!e.isFile()) continue;
+    if (e.name.startsWith('.')) continue;
+    files.push(e.name);
   }
   return files.sort();
 }
@@ -68,5 +65,4 @@ module.exports = {
   readPageFilesFromDir,
   writePageFile,
   listAssetsFromDir,
-  ASSET_EXTENSIONS,
 };
