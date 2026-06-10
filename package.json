@@ -1,6 +1,6 @@
 {
   "name": "@micropage-sh/cli",
-  "version": "2.0.6",
+  "version": "2.0.7",
   "description": "CLI for micropage.sh - create, sync, and publish microsites",
   "main": "src/index.js",
   "bin": {
