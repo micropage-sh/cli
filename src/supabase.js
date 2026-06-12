@@ -437,6 +437,12 @@ async function streamDeployEventsUntilDone(bearerToken, projectId, buildId, opti
   return { terminalEvent };
 }
 
+function hashFile(filePath) {
+  const crypto = require('crypto');
+  const fs = require('fs');
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
 /**
  * Upload a single asset file to the project via the upload-file Edge function.
  * Uses a pre-obtained Supabase access token.
@@ -447,10 +453,12 @@ async function uploadAssetWithToken(accessToken, projectId, filePath, filename) 
 
   const bytes = fs.readFileSync(filePath);
   const mimeType = mime.fromFilename(filename);
+  const sha = hashFile(filePath);
 
   const formData = new FormData();
   formData.append('file', new Blob([bytes], { type: mimeType }), filename);
   formData.append('project_id', String(projectId));
+  formData.append('content_hash', sha);
 
   const res = await fetch(`${SUPABASE_URL}/functions/v1/upload-file`, {
     method: 'POST',
@@ -473,9 +481,33 @@ async function uploadAssetWithToken(accessToken, projectId, filePath, filename) 
   return data;
 }
 
+async function deleteFileWithToken(accessToken, fileId) {
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-file`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const msg = (data && (data.error || data.message)) || `HTTP ${res.status}`;
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
 /**
  * Upload all assets from the local `assets/` directory for a project.
- * Skips files that already exist on the server (matched by filename).
+ * Compares each local file's SHA-256 hash against the server's stored hash.
+ * Skips files whose content is unchanged. Deletes and re-uploads files whose
+ * content has changed (or whose server hash is NULL from before hashing was added).
  * Returns the count of files uploaded.
  */
 async function uploadAssetsWithToken(accessToken, projectId, cwd, onProgress) {
@@ -485,7 +517,9 @@ async function uploadAssetsWithToken(accessToken, projectId, cwd, onProgress) {
   const assetFiles = listAssetsFromDir(cwd);
   if (assetFiles.length === 0) return 0;
 
-  // Fetch existing filenames so we can skip unchanged files
+  // Fetch existing files so we can skip unchanged ones. We MUST treat a
+  // non-OK response as fatal: continuing with an empty list would re-upload
+  // every asset and (when filenames collide) leave duplicate user_files rows.
   const listRes = await fetch(
     `${SUPABASE_URL}/functions/v1/list-files?project_id=${encodeURIComponent(projectId)}`,
     {
@@ -495,13 +529,28 @@ async function uploadAssetsWithToken(accessToken, projectId, cwd, onProgress) {
       },
     },
   );
-  const listData = listRes.ok ? await listRes.json() : null;
-  const existing = new Set((listData?.files || []).map((f) => f.filename));
+  if (!listRes.ok) {
+    const text = await listRes.text().catch(() => '');
+    const err = new Error(`Failed to list project files: HTTP ${listRes.status}${text ? ` — ${text}` : ''}`);
+    err.status = listRes.status;
+    throw err;
+  }
+  const listData = await listRes.json();
+  const existingByName = new Map(
+    (listData?.files || []).map((f) => [f.filename, { id: f.id, content_hash: f.content_hash }]),
+  );
 
   let uploaded = 0;
   for (const filename of assetFiles) {
-    if (existing.has(filename)) continue;
     const filePath = path.join(cwd, 'assets', filename);
+    const localHash = hashFile(filePath);
+    const existing = existingByName.get(filename);
+
+    if (existing && existing.content_hash === localHash) continue;
+
+    if (existing) {
+      await deleteFileWithToken(accessToken, existing.id);
+    }
     await uploadAssetWithToken(accessToken, projectId, filePath, filename);
     if (onProgress) onProgress(filename);
     uploaded++;
@@ -645,4 +694,5 @@ module.exports = {
   pushWithToken,
   invokePublishBuild,
   uploadAssetsWithToken,
+  hashFile,
 };
