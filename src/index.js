@@ -13,6 +13,7 @@ const submissions = require('./commands/submissions');
 const forms = require('./commands/forms');
 const files = require('./commands/files');
 const links = require('./commands/links');
+const posts = require('./commands/posts');
 
 const program = new Command();
 
@@ -240,5 +241,33 @@ subCmd
     'Output file path (default: submissions.<format>)',
   )
   .action((opts) => submissions.exportSubmissions(opts));
+
+// ---------------------------------------------------------------------------
+// Posts  (micropage posts <subcommand>)
+// ---------------------------------------------------------------------------
+
+const postsCmd = program.command('posts').description('Manage posts (dual-channel web + email content)');
+
+postsCmd
+  .command('push')
+  .description('Upload local posts/*.md as post rows (create or update); reports remote-only posts as drift')
+  .action((opts) => posts.push(opts));
+
+postsCmd
+  .command('pull')
+  .description('Write remote posts to local posts/*.md files')
+  .option('-f, --force', 'Overwrite existing local files without prompting')
+  .action((opts) => posts.pull(opts));
+
+postsCmd
+  .command('list')
+  .description('List posts for the current project')
+  .option('--json', 'Output as JSON')
+  .action((opts) => posts.list(opts));
+
+postsCmd
+  .command('rm <slug>')
+  .description('Delete a post by slug (remote only; does not touch local files)')
+  .action((slug, opts) => posts.rm(slug, opts));
 
 program.parse();

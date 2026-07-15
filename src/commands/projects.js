@@ -286,6 +286,7 @@ async function create(name, options = {}) {
     name: project.name || name,
   });
   fs.mkdirSync(path.join(dir, 'assets'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'posts'), { recursive: true });
 
   copyExamplesAndAssetsIntoProject(dir);
 
