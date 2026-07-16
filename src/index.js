@@ -250,7 +250,7 @@ const postsCmd = program.command('posts').description('Manage posts (dual-channe
 
 postsCmd
   .command('push')
-  .description('Upload local posts/*.md as post rows (create or update); reports remote-only posts as drift')
+  .description('Save draft/update local posts/*.md as post rows (does not publish or email); reports remote-only posts as drift')
   .action((opts) => posts.push(opts));
 
 postsCmd
@@ -264,6 +264,16 @@ postsCmd
   .description('List posts for the current project')
   .option('--json', 'Output as JSON')
   .action((opts) => posts.list(opts));
+
+postsCmd
+  .command('publish [slug]')
+  .description('Publish one post by slug, or all local posts if omitted; (re)sends email for email-configured posts')
+  .action((slug, opts) => posts.publish(slug, opts));
+
+postsCmd
+  .command('unpublish <slug>')
+  .description('Take a post off the site (does not delete it; it remains as a draft)')
+  .action((slug, opts) => posts.unpublish(slug, opts));
 
 postsCmd
   .command('rm <slug>')

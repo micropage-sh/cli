@@ -128,7 +128,7 @@ async function push(options = {}) {
   try {
     remotePosts = await db
       .from('posts')
-      .select('id,slug,title,web_visibility,email_enabled,status,created_at')
+      .select('id,slug,title,web_visibility,email_enabled,status,published_at,created_at')
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')
       .get();
@@ -189,8 +189,8 @@ async function push(options = {}) {
     localSlugs.add(slug);
 
     const visibility = fm.visibility || 'listed';
-    if (!['listed', 'unlisted', 'none'].includes(visibility)) {
-      console.error(`${relName}: invalid "visibility" (${visibility}); use listed, unlisted, or none`);
+    if (!['listed', 'unlisted'].includes(visibility)) {
+      console.error(`${relName}: invalid "visibility" (${visibility}); use listed or unlisted`);
       hadError = true;
       continue;
     }
@@ -259,7 +259,6 @@ async function push(options = {}) {
       description: fm.description || null,
       web_visibility: visibility,
       hero_image: heroUrl,
-      email: emailWanted,
       form_id: formId,
       subject: fm.subject || null,
       preheader: fm.preview || null,
@@ -267,10 +266,9 @@ async function push(options = {}) {
 
     try {
       const result = await fn.invoke('upsert-post', payload);
-      const bits = [`${result.action}`];
-      if (result.emailed) bits.push('emailed');
-      summary.push({ file: relName, slug, ok: true, note: bits.join(', ') });
-      console.log(`${relName} -> "${slug}": ${bits.join(', ')}`);
+      const note = `${result.action}, saved (${result.published ? 'live' : 'draft'})`;
+      summary.push({ file: relName, slug, ok: true, note });
+      console.log(`${relName} -> "${slug}": ${note}`);
     } catch (err) {
       handleAuthError(err);
       const msg = err.status === 409 ? 'slug already in use for another post' : err.message;
@@ -314,7 +312,7 @@ async function pull(options = {}) {
     remotePosts = await db
       .from('posts')
       .select(
-        'id,slug,title,description,body_markdown,web_visibility,email_enabled,status,hero_image,created_at',
+        'id,slug,title,description,body_markdown,web_visibility,email_enabled,status,hero_image,published_at,created_at',
       )
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')
@@ -389,7 +387,7 @@ async function list(options = {}) {
     posts = await db
       .from('posts')
       .select(
-        'id,slug,title,web_visibility,email_enabled,status,created_at',
+        'id,slug,title,web_visibility,email_enabled,status,published_at,created_at',
       )
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')
@@ -414,11 +412,12 @@ async function list(options = {}) {
     p.slug || '-',
     p.title || '-',
     p.web_visibility || '-',
+    p.published_at ? 'Published' : 'Draft',
     p.email_enabled ? 'yes' : 'no',
     p.status || '-',
     formatDate(p.created_at),
   ]);
-  formatTable(rows, ['Slug', 'Title', 'Visibility', 'Emailed', 'Status', 'Created']);
+  formatTable(rows, ['Slug', 'Title', 'Visibility', 'Published', 'Emailed', 'Status', 'Created']);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,4 +448,107 @@ async function rm(slug, options = {}) {
   }
 }
 
-module.exports = { push, pull, list, rm };
+// ---------------------------------------------------------------------------
+// posts publish [slug]
+// ---------------------------------------------------------------------------
+
+/** Slugs to target when no explicit slug is given: every local posts/*.md file's resolved slug. */
+function localSlugsFromPostsDir(postsDir) {
+  const slugs = [];
+  for (const filePath of listLocalPostFiles(postsDir)) {
+    let fm = {};
+    try {
+      fm = matter(fs.readFileSync(filePath, 'utf8')).data || {};
+    } catch {
+      continue;
+    }
+    const slug = fm.slug ? slugify(String(fm.slug)) : slugify(defaultSlugFromFilename(filePath));
+    if (slug) slugs.push(slug);
+  }
+  return slugs;
+}
+
+async function publish(slugArg, options = {}) {
+  const cwd = process.cwd();
+  const config = requireProjectConfig(cwd);
+
+  let targetSlugs;
+  if (slugArg) {
+    targetSlugs = [slugify(String(slugArg))];
+  } else {
+    const postsDir = requirePostsDir(cwd);
+    targetSlugs = localSlugsFromPostsDir(postsDir);
+    if (targetSlugs.length === 0) {
+      console.log(`No .md files found in "${POSTS_DIR}/". Nothing to publish.`);
+      return;
+    }
+  }
+
+  console.warn(
+    'Publishing sends (or re-sends) email to the active subscriber list for any email-configured post.',
+  );
+
+  let hadError = false;
+  let publishedCount = 0;
+
+  for (const slug of targetSlugs) {
+    try {
+      const result = await fn.invoke('publish-post', { project_id: config.projectId, slug });
+      const bits = [`published_at ${result.published_at}`];
+      bits.push(result.emailed ? `emailed ${result.recipient_count} recipient(s)` : 'no email');
+      console.log(`"${slug}": ${bits.join(', ')}`);
+      publishedCount += 1;
+    } catch (err) {
+      handleAuthError(err);
+      const msg = err.status === 404 ? 'post not found (push it first with "micropage posts push")' : err.message;
+      console.error(`"${slug}": publish failed (${msg})`);
+      hadError = true;
+    }
+  }
+
+  console.log('');
+  console.log(`Published ${publishedCount}/${targetSlugs.length} post(s).`);
+
+  if (hadError) process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// posts unpublish <slug>
+// ---------------------------------------------------------------------------
+
+async function unpublish(slug) {
+  if (!slug) {
+    console.error('Usage: micropage posts unpublish <slug>');
+    process.exit(1);
+  }
+  const cwd = process.cwd();
+  const config = requireProjectConfig(cwd);
+
+  let result;
+  try {
+    result = await fn.invoke('unpublish-post', { project_id: config.projectId, slug: slugify(String(slug)) });
+  } catch (err) {
+    handleAuthError(err);
+    const msg = err.status === 404 ? 'post not found' : err.message;
+    console.error(`Failed to unpublish post: ${msg}`);
+    process.exit(1);
+  }
+
+  if (result?.unpublished) {
+    console.log(`Unpublished post "${slug}" (removed from the site; remains as a draft).`);
+  } else {
+    console.log(`No post found with slug "${slug}" — nothing to unpublish.`);
+  }
+}
+
+module.exports = {
+  push,
+  pull,
+  list,
+  rm,
+  publish,
+  unpublish,
+  slugify,
+  defaultSlugFromFilename,
+  frontMatterFromPost,
+};

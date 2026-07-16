@@ -1,6 +1,6 @@
 {
   "name": "@micropage-sh/cli",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "CLI for micropage.sh - create, sync, and publish microsites",
   "main": "src/index.js",
   "bin": {
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node -e \"require('./src/index.js')\"",
+    "test": "node -e \"require('./src/index.js')\"; node --test test/",
     "build:bin": "pkg . --targets node18-linux-x64,node18-macos-x64,node18-macos-arm64 --output dist/micropage",
     "build:linux": "pkg . --target node18-linux-x64 --output dist/micropage-linux-amd64",
     "build:macos-amd64": "pkg . --target node18-macos-x64 --output dist/micropage-darwin-amd64",
