@@ -63,6 +63,40 @@ micropage copy-link
 
 When you create a project without `-d`, the API assigns `projects.domain` as the initial host for your site (for example `my-site.micropage.sh`). You can optionally attach a custom domain (such as `www.example.com`) in the web editor; when present, the CLI shows that custom domain as the site URL (otherwise the default host).
 
+### Authoring posts
+
+Posts live in the project's `posts/` folder as Markdown files with YAML front-matter:
+
+```markdown
+---
+title: Hello, world
+slug: hello
+description: A short summary for the archive, meta description, and og tags.
+visibility: listed
+hero: ./hello.jpg
+list: newsletter
+subject: Hello, world!
+preview: The first post on this site.
+---
+
+Body content goes here as standard Markdown.
+```
+
+`title` is required. `slug` defaults to the filename minus a leading `YYYY-MM-DD-` date prefix. `visibility` is `listed` (default, appears in the site's `/content` index) or `unlisted`. `list` names a newsletter form and is required to email the post on publish. Local image references in the body are auto-uploaded and rewritten to hosted URLs on `push`.
+
+```bash
+# Save posts/hello.md as a draft
+micropage posts push
+
+# Publish it (and email the `list:` target, if set)
+micropage posts publish hello
+
+# Take it back down (stays as a draft)
+micropage posts unpublish hello
+```
+
+See [`micropage posts`](#posts) below for the full command set.
+
 ## Commands reference
 
 ### Auth
@@ -115,6 +149,19 @@ When you create a new project, the CLI also scaffolds:
 | `micropage preview` | Open the live site in the browser |
 | `micropage copy-link` | Copy the live URL to clipboard |
 | `micropage open-pricing` | Open the pricing page in the browser |
+
+### Posts
+
+| Command | Description |
+|---|---|
+| `micropage posts push` | Save local `posts/*.md` files as post drafts (or update already-published posts, which go live immediately) |
+| `micropage posts publish [slug]` | Publish a post (or all local posts) to the web; sends the newsletter email if the post has a `list:`. Re-running re-sends the email. |
+| `micropage posts unpublish <slug>` | Remove a post's `/content/<slug>` page; the post remains as a draft |
+| `micropage posts pull` | Pull remote posts down to local `posts/*.md` files |
+| `micropage posts list` | List the project's posts (slug, title, visibility, emailed, status, created) |
+| `micropage posts rm <slug>` | Delete a post entirely (remote) |
+
+**Note:** `micropage posts publish` publishes a single *post*. It's distinct from `micropage publish`, which pushes and deploys the *site*.
 
 ### Files
 
