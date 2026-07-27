@@ -155,13 +155,13 @@ When you create a new project, the CLI also scaffolds:
 | Command | Description |
 |---|---|
 | `micropage posts push` | Save local `posts/*.md` files as post drafts (or update already-published posts, which go live immediately) |
-| `micropage posts publish [slug]` | Publish a post (or all local posts) to the web; sends the newsletter email if the post has a `list:`. Re-running re-sends the email. |
+| `micropage posts publish [slug] [-w]` | Publish a post (or all local posts) to the web; sends the newsletter email if the post has a `list:`. Re-running re-sends the email. Auto-queues a rebuild of the site so the `/content` archive updates — no separate `micropage publish` needed. Use `-w` to stream the rebuild's deploy events until it's live. |
 | `micropage posts unpublish <slug>` | Remove a post's `/content/<slug>` page; the post remains as a draft |
 | `micropage posts pull` | Pull remote posts down to local `posts/*.md` files |
-| `micropage posts list` | List the project's posts (slug, title, visibility, emailed, status, created) |
+| `micropage posts list` | List the project's posts (slug, title, visibility, published/draft, emailed, send status, created). "Send status" is the newsletter send lifecycle and shows only for email posts — it does not reflect deploy state. |
 | `micropage posts rm <slug>` | Delete a post entirely (remote) |
 
-**Note:** `micropage posts publish` publishes a single *post*. It's distinct from `micropage publish`, which pushes and deploys the *site*.
+**Note:** `micropage posts publish` publishes a single *post* and automatically rebuilds the site so the post appears on the `/content` archive — you do **not** need to run `micropage publish` afterward. `micropage publish` is for deploying changes to the *site* content (`.page` files) itself.
 
 ### Files
 

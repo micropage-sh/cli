@@ -300,6 +300,16 @@ const TERMINAL_DEPLOY_EVENTS = new Set([
 ]);
 
 /**
+ * Collapse arbitrary text to a single bounded line. Keeps a Rails/HTML error
+ * body or backtrace that leaks into an event payload from flooding the deploy
+ * stream (the CLI is not the place to render a server stack trace).
+ */
+function truncateForConsole(str, max = 200) {
+  const oneLine = String(str).replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+/**
  * Human-readable line for deploy stream (falls back to event_type + JSON payload).
  * @param {{ event_type?: string, payload?: Record<string, unknown> }} ev
  */
@@ -326,14 +336,14 @@ function formatDeployEventForConsole(ev) {
       case 'active':
         return `${eventType}: live — ${https}`;
       case 'failed':
-        return `${eventType}: failed — ${payload.error || 'unknown'}`;
+        return `${eventType}: failed — ${truncateForConsole(payload.error || 'unknown', 160)}`;
       case 'timeout':
         return `${eventType}: still pending after wait (try ${https || 'URL'} shortly)`;
       default:
         break;
     }
   }
-  const extra = ev.payload ? ` ${JSON.stringify(ev.payload)}` : '';
+  const extra = ev.payload ? ` ${truncateForConsole(JSON.stringify(ev.payload))}` : '';
   return `${eventType}${extra}`;
 }
 
@@ -418,7 +428,13 @@ async function streamDeployEventsUntilDone(bearerToken, projectId, buildId, opti
             }
           } catch (e) {
             if (e instanceof SyntaxError) {
-              console.log(json);
+              // A non-JSON data line usually means an HTML/error body leaked into
+              // the stream — summarize it instead of dumping the whole page.
+              if (/^\s*</.test(json)) {
+                console.log('[stream] skipped non-JSON response chunk');
+              } else {
+                console.log(truncateForConsole(json));
+              }
             } else {
               throw e;
             }

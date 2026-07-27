@@ -4,7 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const matter = require('gray-matter');
 
-const { db, fn, handleAuthError, getValidAccessToken } = require('../supabase');
+const {
+  db,
+  fn,
+  handleAuthError,
+  getValidAccessToken,
+  getMaxDeployEventIdForBuild,
+  streamDeployEventsUntilDone,
+} = require('../supabase');
 const { getProjectConfig } = require('../auth');
 const { formatTable, formatDate } = require('../utils');
 const { fetchRemoteFileIndex, resolveHeroImage, resolveBodyImages } = require('../posts-assets');
@@ -414,10 +421,13 @@ async function list(options = {}) {
     p.web_visibility || '-',
     p.published_at ? 'Published' : 'Draft',
     p.email_enabled ? 'yes' : 'no',
-    p.status || '-',
+    // `status` tracks the newsletter send lifecycle only; it says nothing about
+    // deploy state, so it's meaningless (and misleading — reads as "pending") for
+    // web-only posts. Show it only when the post actually emails.
+    p.email_enabled ? (p.status || '-') : '-',
     formatDate(p.created_at),
   ]);
-  formatTable(rows, ['Slug', 'Title', 'Visibility', 'Published', 'Emailed', 'Status', 'Created']);
+  formatTable(rows, ['Slug', 'Title', 'Visibility', 'Published', 'Emailed', 'Send status', 'Created']);
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +498,31 @@ async function publish(slugArg, options = {}) {
     'Publishing sends (or re-sends) email to the active subscriber list for any email-configured post.',
   );
 
+  // Publishing a post makes the publisher auto-rebuild the site's active build so
+  // the /content archive picks it up — no separate `micropage publish` needed.
+  // Resolve that build up front so we can report accurately and (with --watch)
+  // capture an event cursor before the rebuild is queued.
+  let activeBuildId = null;
+  try {
+    const proj = await db
+      .from('projects')
+      .select('active_build_id')
+      .eq('id', config.projectId)
+      .single();
+    activeBuildId = proj?.active_build_id || null;
+  } catch {
+    // best-effort; treated as "unknown" below
+  }
+
+  let eventCursor = 0;
+  if (options.watch && activeBuildId) {
+    try {
+      eventCursor = await getMaxDeployEventIdForBuild(activeBuildId);
+    } catch {
+      eventCursor = 0;
+    }
+  }
+
   let hadError = false;
   let publishedCount = 0;
 
@@ -508,6 +543,42 @@ async function publish(slugArg, options = {}) {
 
   console.log('');
   console.log(`Published ${publishedCount}/${targetSlugs.length} post(s).`);
+
+  if (publishedCount > 0) {
+    if (activeBuildId) {
+      console.log(
+        'A site rebuild was queued automatically; the /content archive updates once it deploys (usually a minute or two).',
+      );
+    } else {
+      console.log(
+        "Note: this project hasn't been published yet, so the post won't appear until you run 'micropage publish'.",
+      );
+    }
+
+    if (options.watch && activeBuildId) {
+      console.log('');
+      console.log('Build / deploy events:');
+      try {
+        const accessToken = await getValidAccessToken();
+        const { terminalEvent } = await streamDeployEventsUntilDone(
+          accessToken,
+          config.projectId,
+          activeBuildId,
+          { afterId: eventCursor },
+        );
+        if (terminalEvent?.event_type === 'build.failed') {
+          const msg =
+            (terminalEvent.payload && (terminalEvent.payload.error || terminalEvent.payload.message)) ||
+            'Build failed';
+          console.error(msg);
+          process.exit(1);
+        }
+      } catch (streamErr) {
+        console.error('Event stream failed:', streamErr.message);
+        process.exit(1);
+      }
+    }
+  }
 
   if (hadError) process.exit(1);
 }

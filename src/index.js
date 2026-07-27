@@ -267,7 +267,8 @@ postsCmd
 
 postsCmd
   .command('publish [slug]')
-  .description('Publish one post by slug, or all local posts if omitted; (re)sends email for email-configured posts')
+  .description('Publish one post by slug, or all local posts if omitted; (re)sends email for email-configured posts. Auto-triggers a site rebuild so the /content archive updates')
+  .option('-w, --watch', 'Stream build/deploy events until the auto-triggered site rebuild deploys')
   .action((slug, opts) => posts.publish(slug, opts));
 
 postsCmd
