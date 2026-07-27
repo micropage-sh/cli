@@ -8,13 +8,15 @@ Deferred ideas — pick up when relevant.
 
 - [ ] **`posts publish -w` — multi-post watch terminates early.** `posts publish` auto-triggers a rebuild of the project's active build, and `-w/--watch` streams that rebuild's deploy events (added alongside the "rebuild auto-queued" messaging). When publishing *multiple* posts at once, the stream captures one event cursor up front and exits on the first rebuild's terminal `deployment.completed`, which can happen before later posts' rebuilds deploy — so `--watch` may report "live" slightly early. Exact for the common single-slug case. Fix idea: only promise "until live" for a single target, or track/await one rebuild per published slug.
 
-- [ ] **Pinpoint the `micropage publish -w` stack-trace-on-success.** Reported on a custom-domain
-  project (thesantafeweekender.com / project 84): a Ruby/HTML backtrace printed to stdout on an
-  otherwise-successful publish. Could not reproduce on a default `*.micropage.sh` project — the default
-  path prints clean. A defensive guard now bounds/one-lines payload output in the deploy-event stream
-  (`src/supabase.js` `truncateForConsole` + HTML-chunk skip), which should stop the flood, but the exact
-  triggering event (likely a non-fatal custom-domain-wiring or webhook error carrying a backtrace) still
-  wants pinning from a real captured `-w` run on a custom-domain project.
+- [x] **Pinpoint the `micropage publish -w` stack-trace-on-success.** Source found: the publisher's
+  `CloudflareClient#wire_platform_hostname` rescue (`publisher/app/services/cloudflare_client.rb:142`)
+  emits up to 500 chars of `e.message` in a `deployment.domain_wiring: failed` event (all other wiring
+  failures use short static codes). A verbose Cloudflare HTTP error message reads like a trace. It only
+  fires on first-deploy / re-wire, which is why a default `*.micropage.sh` project prints clean. Fixed in
+  CLI v2.3.0: `src/supabase.js` `truncateForConsole` one-lines + bounds that field (160 chars) on display,
+  and the raw-SSE fallback skips HTML chunks; `domain_wiring: failed` is non-terminal so nothing prints it
+  untruncated. Publisher side already truncates to 500 and uses `e.message` (not a backtrace), so no
+  server change needed.
 
 - [ ] **`posts push` — offer to sync deletions.** Today drift (remote posts with no local file) is only reported, never deleted (by design — filesystem is not the source of truth). Consider a `--prune` flag that, after confirmation, `rm`s remote posts absent locally, for users who do want the folder to be authoritative.
 - [x] **Add CLI tests for the `posts` group.** Done: `test/posts-helpers.test.js` (node:test) covers `slugify`, `defaultSlugFromFilename`, `frontMatterFromPost` round-trip, and `findCompanionImage`; the pure helpers are now exported from `src/commands/posts.js` and `npm test` runs `node --test test/`.
