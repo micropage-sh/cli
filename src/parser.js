@@ -48,6 +48,21 @@ function writePageFile(dir, content) {
   return dest;
 }
 
+/**
+ * Read a root-level llms.txt from the given directory.
+ *
+ * Returns the file's UTF-8 content verbatim, or null if the file is absent or
+ * whitespace-only. Content is preserved as-is so authors control the served
+ * `/llms.txt` exactly (only a trailing newline is dropped).
+ */
+function readLlmsTxtFromDir(dir) {
+  const file = path.join(dir, 'llms.txt');
+  if (!fs.existsSync(file)) return null;
+  const content = fs.readFileSync(file, 'utf8');
+  if (!content.trim()) return null;
+  return content.replace(/\n$/, '');
+}
+
 function listAssetsFromDir(dir) {
   const assetsDir = path.join(dir, 'assets');
   if (!fs.existsSync(assetsDir)) return [];
@@ -65,4 +80,5 @@ module.exports = {
   readPageFilesFromDir,
   writePageFile,
   listAssetsFromDir,
+  readLlmsTxtFromDir,
 };

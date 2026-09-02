@@ -210,6 +210,10 @@ The CLI uses one or more `*.page` files in the working directory as the source o
 
 **Pulling** always writes to `landing.page` only.
 
+### `llms.txt`
+
+If the project folder contains a root-level `llms.txt`, its contents are published verbatim and served at `/llms.txt` (a curated map of the site for LLM agents). Remove the local file and re-publish to take it down.
+
 ## Project configuration
 
 Each project folder has a `.micropage/project.json` file that stores:

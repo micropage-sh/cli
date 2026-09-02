@@ -14,7 +14,7 @@ const {
   uploadAssetsWithToken,
 } = require('../supabase');
 const { getProjectConfig, setProjectConfig } = require('../auth');
-const { readPageFilesFromDir } = require('../parser');
+const { readPageFilesFromDir, readLlmsTxtFromDir } = require('../parser');
 const { BUILD_COMPILER_URL } = require('../config');
 const { formatTable, formatDate } = require('../utils');
 
@@ -165,6 +165,13 @@ async function push(options = {}) {
   } catch (err) {
     console.error('Parse failed:', err.message);
     process.exit(1);
+  }
+
+  const llmsTxt = readLlmsTxtFromDir(cwd);
+  if (llmsTxt != null) {
+    jsonContent.site = jsonContent.site || {};
+    jsonContent.site.llms_txt = llmsTxt;
+    console.log(`Including llms.txt (${Buffer.byteLength(llmsTxt, 'utf8')} bytes).`);
   }
 
   // Decide whether to update existing draft or create new build
