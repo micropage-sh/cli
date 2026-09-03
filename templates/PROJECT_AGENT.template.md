@@ -44,10 +44,28 @@ Commands:
 - `micropage posts list` — list remote posts.
 - `micropage posts rm <slug>` — delete a post remotely (local file is untouched).
 
+## The `.page` grammar (closed vocabulary)
+
+Micropage is a line-oriented markup with a small, fixed set of tags — one element per line, no nesting, no inventing names. The whole grammar is roughly:
+
+- File shape: a `[site]` block (title, description, logo, favicon, lang, colors, theme_color, og_image), optional `[nav]` and `[footer]`, then one or more page blocks like `[Home -> /]` / `[About -> /about]`.
+- Sections inside a page: `/// hero`, `/// section`, and (rarely) `/// html`. Both `/// hero` and `/// section` take optional `align:center` and `bg:primary|secondary|muted|success|info`.
+- Elements (~30 legal tags): `h1:`–`h5:`, `p:`, `small:`, `icon: bi bi-name`, `img: <- filename`, `button:`, `btn-secondary:`, `btn-outline:`, `link:`, `col:`, and form tags `form:`, `input:` (trailing `*` = required), `text:`, `textarea:`, `select: Label [A, B]`, `checkboxes:`, `radios:`, `submit:`.
+- Images use the `<- filename` convention (e.g. `img: <- product-dashboard`); the file must be uploaded to the project. Don't hardcode random remote URLs unless asked.
+- Colors and typography come from the `[site]` block, not from inline styles.
+
+This is a summary. The canonical, always-current grammar lives at `https://micropage.sh/llms.txt` — read it before generating or heavily editing `.page` content.
+
+<!-- PROJECT_TONE: (optional) one line describing this project's voice/tone for the agent. -->
+
 ## How to propose edits safely
 
-- Prefer editing existing `.page` files instead of introducing new formats.
-- Keep the Micropage DSL valid — follow the patterns used in the `examples/` folder.
+- Prefer editing existing `.page` files in place instead of introducing new formats or new files.
+- Keep the Micropage DSL valid — use only the tags above and follow the patterns in the `examples/` folder.
+- Do not invent element names or new components, and do not emit React, Tailwind class soup, or custom HTML. Avoid `/// html` unless explicitly asked for raw markup.
+- Do not wrap the file in markdown fences when writing it back — the `.page` file is not a Markdown document.
+- Keep structure stable across edits: change copy and reorder before adding or removing sections.
+- Read the current `[site]` block and reuse its declared colors; never introduce inline colors.
 - When creating alternative versions of a section, consider:
   - Copying the original block into `examples/` and annotating it there.
   - Proposing a diff-style change rather than rewriting entire files.
@@ -56,6 +74,7 @@ Commands:
 
 For full documentation of the Micropage format and features, see:
 
-- `https://docs.micropage.sh`
+- `https://micropage.sh/llms.txt` — the canonical, machine-readable grammar (start here when editing `.page` files)
+- `https://docs.micropage.sh` — human-facing docs
 
 You can use the examples in this project as concrete references when generating or modifying `.page` content.
