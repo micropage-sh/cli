@@ -13,6 +13,11 @@ function formatCliFieldValue(value) {
   return String(value);
 }
 
+/** Spam is `flagged_at IS NOT NULL`; the inbox is everything else. */
+function applySpamFilter(query, spam) {
+  return spam ? query.not('flagged_at', 'is', 'null') : query.is('flagged_at', 'null');
+}
+
 async function list(options = {}) {
   const cwd = process.cwd();
   const config = getProjectConfig(cwd);
@@ -21,12 +26,17 @@ async function list(options = {}) {
     process.exit(1);
   }
 
+  const spam = Boolean(options.spam);
+  const columns = spam
+    ? 'id,form_id,form_name,page_url,created_at,form_index,spam_reason,flagged_at,flagged_by'
+    : 'id,form_id,form_name,page_url,created_at,form_index';
+
   let submissions;
   try {
-    submissions = await db
-      .from('form_submissions')
-      .select('id,form_id,form_name,page_url,created_at,form_index')
-      .eq('project_id', config.projectId)
+    submissions = await applySpamFilter(
+      db.from('form_submissions').select(columns).eq('project_id', config.projectId),
+      spam,
+    )
       .order('created_at', 'desc')
       .get();
   } catch (err) {
@@ -36,7 +46,7 @@ async function list(options = {}) {
   }
 
   if (!Array.isArray(submissions) || submissions.length === 0) {
-    console.log('No form submissions.');
+    console.log(spam ? 'No spam submissions.' : 'No form submissions.');
     return;
   }
 
@@ -45,14 +55,20 @@ async function list(options = {}) {
     return;
   }
 
-  const rows = submissions.map((s) => [
-    s.id.slice(0, 8) + '…',
-    s.form_id ? s.form_id.slice(0, 8) + '…' : '-',
-    s.form_name || '-',
-    s.page_url || '-',
-    formatDate(s.created_at),
-  ]);
-  formatTable(rows, ['ID (short)', 'Form ID', 'Form', 'Page URL', 'Submitted']);
+  const rows = submissions.map((s) => {
+    const row = [
+      s.id.slice(0, 8) + '…',
+      s.form_id ? s.form_id.slice(0, 8) + '…' : '-',
+      s.form_name || '-',
+      s.page_url || '-',
+      formatDate(s.created_at),
+    ];
+    if (spam) row.push(s.spam_reason || '-');
+    return row;
+  });
+  const headers = ['ID (short)', 'Form ID', 'Form', 'Page URL', 'Submitted'];
+  if (spam) headers.push('Spam reason');
+  formatTable(rows, headers);
 }
 
 async function show(id, options = {}) {
@@ -85,6 +101,9 @@ async function show(id, options = {}) {
   }
 
   console.log('ID:         ', submission.id);
+  if (submission.flagged_at) {
+    console.log('Spam:       ', submission.spam_reason || 'yes');
+  }
   console.log('Form ID:    ', submission.form_id || '-');
   console.log('Form:       ', submission.form_name || '-');
   console.log('Page URL:   ', submission.page_url || '-');
@@ -112,12 +131,14 @@ async function exportSubmissions(options = {}) {
     process.exit(1);
   }
 
+  const spam = Boolean(options.spam);
+
   let submissions;
   try {
-    submissions = await db
-      .from('form_submissions')
-      .select('*')
-      .eq('project_id', config.projectId)
+    submissions = await applySpamFilter(
+      db.from('form_submissions').select('*').eq('project_id', config.projectId),
+      spam,
+    )
       .order('created_at', 'desc')
       .get();
   } catch (err) {
@@ -127,7 +148,7 @@ async function exportSubmissions(options = {}) {
   }
 
   if (!Array.isArray(submissions) || submissions.length === 0) {
-    console.log('No form submissions to export.');
+    console.log(spam ? 'No spam submissions to export.' : 'No form submissions to export.');
     return;
   }
 
@@ -137,7 +158,7 @@ async function exportSubmissions(options = {}) {
     process.exit(1);
   }
 
-  const defaultName = `submissions.${format}`;
+  const defaultName = spam ? `submissions-spam.${format}` : `submissions.${format}`;
   const outFile = options.output
     ? path.isAbsolute(options.output)
       ? options.output
@@ -158,6 +179,7 @@ async function exportSubmissions(options = {}) {
         'build_id',
         'payload_json',
       ];
+      if (spam) header.push('spam_reason');
       const escapeCell = (value) => {
         if (value === null || value === undefined) return '';
         const str = String(value);
@@ -168,8 +190,8 @@ async function exportSubmissions(options = {}) {
       };
       const lines = [
         header.join(','),
-        ...submissions.map((s) =>
-          [
+        ...submissions.map((s) => {
+          const cells = [
             s.id,
             s.created_at,
             s.page_url || '',
@@ -178,8 +200,10 @@ async function exportSubmissions(options = {}) {
             s.form_index ?? '',
             s.build_id || '',
             JSON.stringify(s.payload || {}),
-          ].map(escapeCell).join(','),
-        ),
+          ];
+          if (spam) cells.push(s.spam_reason || '');
+          return cells.map(escapeCell).join(',');
+        }),
       ];
       fs.writeFileSync(outFile, lines.join('\n'), 'utf8');
     }
@@ -188,7 +212,8 @@ async function exportSubmissions(options = {}) {
     process.exit(1);
   }
 
-  console.log(`Exported ${submissions.length} submission(s) → ${outFile}`);
+  const noun = spam ? 'spam submission(s)' : 'submission(s)';
+  console.log(`Exported ${submissions.length} ${noun} → ${outFile}`);
 }
 
-module.exports = { list, show, exportSubmissions };
+module.exports = { list, show, exportSubmissions, applySpamFilter };

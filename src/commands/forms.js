@@ -52,13 +52,14 @@ async function list(options = {}) {
     return;
   }
 
-  // Count submissions per form_id
+  // Count non-spam submissions per form_id
   let submissions;
   try {
     submissions = await db
       .from('form_submissions')
       .select('form_id')
       .eq('project_id', config.projectId)
+      .is('flagged_at', 'null')
       .get();
   } catch (err) {
     handleAuthError(err);

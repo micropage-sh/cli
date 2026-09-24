@@ -207,6 +207,8 @@ function buildQuery(table) {
     select(cols) { _select = cols; return q; },
     eq(col, val) { filters.push(`${col}=eq.${val}`); return q; },
     in(col, vals) { filters.push(`${col}=in.(${vals.join(',')})`); return q; },
+    is(col, val) { filters.push(`${col}=is.${val}`); return q; },
+    not(col, op, val) { filters.push(`${col}=not.${op}.${val}`); return q; },
     order(col, dir = 'asc') { _order = `${col}.${dir}`; return q; },
     limit(n) { _limit = n; return q; },
 

@@ -175,9 +175,9 @@ When you create a new project, the CLI also scaffolds:
 
 | Command | Description |
 |---|---|
-| `micropage submissions list [--json]` | List form submissions for the project |
-| `micropage submissions show <id> [--json]` | Show a single submission in detail |
-| `micropage submissions export [--format csv|json] [-o file]` | Export all form submissions for the current project |
+| `micropage submissions list [--json] [--spam]` | List form submissions for the project. Spam is excluded; `--spam` lists only submissions flagged as spam, with the reason |
+| `micropage submissions show <id> [--json]` | Show a single submission in detail, including a `Spam:` line with the reason when it was flagged |
+| `micropage submissions export [--format csv|json] [-o file] [--spam]` | Export form submissions for the current project. Spam is excluded; `--spam` exports only flagged submissions (default file `submissions-spam.<format>`, CSV gets a trailing `spam_reason` column) |
 
 **Examples:**
 
@@ -197,6 +197,12 @@ When you create a new project, the CLI also scaffolds:
 
   ```bash
   micropage submissions export --format json --output submissions.json
+  ```
+
+- Export only submissions flagged as spam:
+
+  ```bash
+  micropage submissions export --spam
   ```
 
 ## Local content model

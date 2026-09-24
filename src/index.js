@@ -219,8 +219,9 @@ const subCmd = program.command('submissions').description('View form submissions
 
 subCmd
   .command('list')
-  .description('List form submissions for the current project')
+  .description('List form submissions for the current project (spam excluded)')
   .option('--json', 'Output as JSON')
+  .option('--spam', 'List only submissions flagged as spam')
   .action((opts) => submissions.list(opts));
 
 subCmd
@@ -231,14 +232,15 @@ subCmd
 
 subCmd
   .command('export')
-  .description('Export form submissions for the current project to a file')
+  .description('Export form submissions for the current project to a file (spam excluded)')
+  .option('--spam', 'Export only submissions flagged as spam')
   .option(
     '-f, --format <format>',
     'Output format: csv or json (default: csv)',
   )
   .option(
     '-o, --output <file>',
-    'Output file path (default: submissions.<format>)',
+    'Output file path (default: submissions.<format>, or submissions-spam.<format> with --spam)',
   )
   .action((opts) => submissions.exportSubmissions(opts));
 
