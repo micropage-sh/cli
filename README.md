@@ -32,6 +32,8 @@ micropage whoami       # show the currently logged-in user and subscription
 micropage logout       # clear the stored session
 ```
 
+The CLI requires a paid plan (Pro or Pro+). Some features need a specific tier, such as deploy tokens (Pro+). The server enforces these limits. When a command needs a higher plan, the CLI prints the server's reason and an upgrade link.
+
 ## Project workflow
 
 ```bash

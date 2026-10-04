@@ -607,6 +607,7 @@ async function deploy(projectUuid, deployToken, options = {}) {
       }
     }
   } catch (err) {
+    handleAuthError(err);
     console.error('Deploy failed:', err.message);
     process.exit(1);
   }

@@ -13,6 +13,7 @@
 
 const { getSession, setSession, clearSession } = require('./auth');
 const { SUPABASE_URL, SUPABASE_ANON_KEY } = require('./config');
+const { formatPlanRequiredMessage } = require('./plan');
 
 // ---------------------------------------------------------------------------
 // JWT helpers
@@ -97,6 +98,18 @@ async function getValidAccessToken() {
 // Base request
 // ---------------------------------------------------------------------------
 
+// Server tier refusals carry `code: "plan_required"` in the JSON body, reusing
+// 402/403. Tag the error so callers can tell "upgrade needed" apart from
+// "not yours" / "invalid token", which share those statuses.
+function attachPlanRequired(err, data) {
+  if (data && typeof data === 'object' && data.code === 'plan_required') {
+    err.code = 'PLAN_REQUIRED';
+    err.requiredTier = data.required_tier || null;
+    err.upgradeUrl = data.upgrade_url || null;
+  }
+  return err;
+}
+
 async function requestWithToken(method, url, body, accessToken, extraHeaders = {}) {
   const headers = {
     'apikey': SUPABASE_ANON_KEY,
@@ -123,6 +136,7 @@ async function requestWithToken(method, url, body, accessToken, extraHeaders = {
     const err = new Error(msg);
     err.status = res.status;
     err.data = data;
+    attachPlanRequired(err, data);
     throw err;
   }
 
@@ -172,6 +186,7 @@ async function request(method, url, body, extraHeaders = {}) {
     err.status = res.status;
     err.data = data;
     if (res.status === 401) err.code = 'SESSION_EXPIRED';
+    attachPlanRequired(err, data);
     throw err;
   }
 
@@ -286,6 +301,10 @@ async function getUserInfo(accessToken) {
 function handleAuthError(err) {
   if (err.code === 'NO_SESSION' || err.code === 'SESSION_EXPIRED') {
     console.error(err.message);
+    process.exit(1);
+  }
+  if (err.code === 'PLAN_REQUIRED') {
+    console.error(formatPlanRequiredMessage(err));
     process.exit(1);
   }
 }
@@ -670,6 +689,7 @@ async function exchangeDeployTokenForAccessToken(deployTokenPlaintext, projectUu
     );
     err.status = res.status;
     err.data = data;
+    attachPlanRequired(err, data);
     throw err;
   }
   if (!data?.access_token) {
@@ -709,6 +729,7 @@ async function invokePublishBuild(accessToken, projectId, buildId) {
     );
     err.status = res.status;
     err.data = data;
+    attachPlanRequired(err, data);
     throw err;
   }
   return data;
@@ -719,6 +740,7 @@ module.exports = {
   fn,
   getUserInfo,
   handleAuthError,
+  attachPlanRequired,
   getValidAccessToken,
   getMaxDeployEventIdForBuild,
   getMaxDeployEventIdForProject,

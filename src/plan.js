@@ -2,13 +2,34 @@
 
 const { SUPABASE_URL, SUPABASE_ANON_KEY } = require('./config');
 
+const PRICING_URL = 'https://micropage.sh/pricing';
+
 const UPGRADE_MESSAGE = [
   'The micropage CLI is available on paid plans only.',
   'Your account is currently on the free plan.',
   '',
-  'Upgrade at: https://micropage.sh/pricing',
+  `Upgrade at: ${PRICING_URL}`,
 ].join('\n');
 
+const TIER_LABELS = { pro: 'Pro', pro_plus: 'Pro+' };
+
+// Message for a server refusal tagged PLAN_REQUIRED (see attachPlanRequired in
+// supabase.js). Leads with the server's own explanation, then the upgrade hint.
+function formatPlanRequiredMessage(err) {
+  const label = TIER_LABELS[err?.requiredTier];
+  const lines = [];
+  if (err?.message) lines.push(err.message, '');
+  lines.push(`This requires ${label ? `the ${label} plan` : 'a paid plan'}.`);
+  lines.push('');
+  lines.push(`Upgrade at: ${err?.upgradeUrl || PRICING_URL}`);
+  return lines.join('\n');
+}
+
+// The login gate below (and in whoami) is a product gate, not a security
+// boundary: anyone can call the Supabase API directly with an editor session.
+// The server enforces the per-feature gates (project limits via RLS, storage
+// quota, custom domains, archives, posts, deploy-token creation and exchange)
+// and answers with `code: "plan_required"` when a tier is missing.
 function isPaidTier(tier) {
   return tier === 'pro' || tier === 'pro_plus';
 }
@@ -37,4 +58,4 @@ async function getPlanTierWithToken(userId, accessToken) {
   }
 }
 
-module.exports = { UPGRADE_MESSAGE, isPaidTier, getPlanTierWithToken };
+module.exports = { UPGRADE_MESSAGE, isPaidTier, getPlanTierWithToken, formatPlanRequiredMessage };
