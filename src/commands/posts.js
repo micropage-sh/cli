@@ -9,7 +9,7 @@ const {
   fn,
   handleAuthError,
   getValidAccessToken,
-  getMaxDeployEventIdForBuild,
+  getMaxDeployEventIdForProject,
   streamDeployEventsUntilDone,
 } = require('../supabase');
 const { getProjectConfig } = require('../auth');
@@ -478,6 +478,18 @@ function localSlugsFromPostsDir(postsDir) {
   return slugs;
 }
 
+/**
+ * The build the publish-post rebuilds redeploy. Servers that report
+ * rebuild_build_id rebuild the live build, never a page draft; older ones
+ * leave it out and rebuild the project's active build.
+ */
+function rebuildTarget(responses, activeBuildId) {
+  const reported = responses.filter((r) => r && Object.prototype.hasOwnProperty.call(r, 'rebuild_build_id'));
+  if (reported.length === 0) return { buildId: activeBuildId || null, serverReported: false };
+  const ids = reported.map((r) => r.rebuild_build_id).filter((id) => id != null);
+  return { buildId: ids.length > 0 ? ids[ids.length - 1] : null, serverReported: true };
+}
+
 async function publish(slugArg, options = {}) {
   const cwd = process.cwd();
   const config = requireProjectConfig(cwd);
@@ -498,10 +510,11 @@ async function publish(slugArg, options = {}) {
     'Publishing sends (or re-sends) email to the active subscriber list for any email-configured post.',
   );
 
-  // Publishing a post makes the publisher auto-rebuild the site's active build so
-  // the /content archive picks it up — no separate `micropage publish` needed.
-  // Resolve that build up front so we can report accurately and (with --watch)
-  // capture an event cursor before the rebuild is queued.
+  // Publishing a post makes the publisher auto-rebuild the live site so the
+  // /content archive picks it up — no separate `micropage publish` needed.
+  // publish-post reports which build it rebuilds; active_build_id is only the
+  // fallback for servers that don't. The --watch cursor is project-wide and
+  // taken before the rebuild is queued, since the build isn't known yet.
   let activeBuildId = null;
   try {
     const proj = await db
@@ -515,9 +528,9 @@ async function publish(slugArg, options = {}) {
   }
 
   let eventCursor = 0;
-  if (options.watch && activeBuildId) {
+  if (options.watch) {
     try {
-      eventCursor = await getMaxDeployEventIdForBuild(activeBuildId);
+      eventCursor = await getMaxDeployEventIdForProject(config.projectId);
     } catch {
       eventCursor = 0;
     }
@@ -525,10 +538,12 @@ async function publish(slugArg, options = {}) {
 
   let hadError = false;
   let publishedCount = 0;
+  const responses = [];
 
   for (const slug of targetSlugs) {
     try {
       const result = await fn.invoke('publish-post', { project_id: config.projectId, slug });
+      responses.push(result);
       const bits = [`published_at ${result.published_at}`];
       bits.push(result.emailed ? `emailed ${result.recipient_count} recipient(s)` : 'no email');
       console.log(`"${slug}": ${bits.join(', ')}`);
@@ -545,9 +560,14 @@ async function publish(slugArg, options = {}) {
   console.log(`Published ${publishedCount}/${targetSlugs.length} post(s).`);
 
   if (publishedCount > 0) {
-    if (activeBuildId) {
+    const { buildId: rebuildBuildId, serverReported } = rebuildTarget(responses, activeBuildId);
+    if (rebuildBuildId) {
       console.log(
         'A site rebuild was queued automatically; the /content archive updates once it deploys (usually a minute or two).',
+      );
+    } else if (serverReported) {
+      console.log(
+        "No site rebuild was queued: the project has no deployed build yet (run 'micropage publish'), or the post is email-only.",
       );
     } else {
       console.log(
@@ -555,7 +575,7 @@ async function publish(slugArg, options = {}) {
       );
     }
 
-    if (options.watch && activeBuildId) {
+    if (options.watch && rebuildBuildId) {
       console.log('');
       console.log('Build / deploy events:');
       try {
@@ -563,7 +583,7 @@ async function publish(slugArg, options = {}) {
         const { terminalEvent } = await streamDeployEventsUntilDone(
           accessToken,
           config.projectId,
-          activeBuildId,
+          rebuildBuildId,
           { afterId: eventCursor },
         );
         if (terminalEvent?.event_type === 'build.failed') {
@@ -619,6 +639,7 @@ module.exports = {
   rm,
   publish,
   unpublish,
+  rebuildTarget,
   slugify,
   defaultSlugFromFilename,
   frontMatterFromPost,

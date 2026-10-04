@@ -366,6 +366,20 @@ async function getMaxDeployEventIdForBuild(buildId, accessToken = null) {
 }
 
 /**
+ * Highest build_deploy_events.id across the project, 0 when none. A cursor
+ * taken before a post change, when the build the server will rebuild is not
+ * known yet: event ids are global and the stream filters by build.
+ */
+async function getMaxDeployEventIdForProject(projectId) {
+  const url = `${SUPABASE_URL}/rest/v1/build_deploy_events?select=id&project_id=eq.${encodeURIComponent(String(projectId))}&order=id.desc&limit=1`;
+  const data = await request('GET', url, null);
+  const row = Array.isArray(data) ? data[0] : null;
+  if (!row || row.id == null) return 0;
+  const n = Number(row.id);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
  * Stream build/deploy/archive events until a terminal event or the connection closes.
  * @param {string} bearerToken
  * @param {number|string} projectId
@@ -707,6 +721,7 @@ module.exports = {
   handleAuthError,
   getValidAccessToken,
   getMaxDeployEventIdForBuild,
+  getMaxDeployEventIdForProject,
   streamDeployEventsUntilDone,
   exchangeDeployTokenForAccessToken,
   pushWithToken,

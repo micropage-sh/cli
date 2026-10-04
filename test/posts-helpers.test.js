@@ -16,7 +16,7 @@ const os = require('os');
 const path = require('path');
 const matter = require('gray-matter');
 
-const { slugify, defaultSlugFromFilename, frontMatterFromPost } = require('../src/commands/posts');
+const { slugify, defaultSlugFromFilename, frontMatterFromPost, rebuildTarget } = require('../src/commands/posts');
 const { findCompanionImage } = require('../src/posts-assets');
 
 // ---------------------------------------------------------------------------
@@ -266,5 +266,31 @@ describe('markdown image ref matching (mirrors resolveBodyImages local-ref filte
     // The regex requires "![...](" immediately after "]" - this body has a space
     // before "(" so it should NOT match as an image at all.
     assert.deepEqual(extractRefs(body), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rebuildTarget (which build `posts publish --watch` follows)
+// ---------------------------------------------------------------------------
+
+describe('rebuildTarget', () => {
+  test('follows the server-reported rebuild_build_id over the active build', () => {
+    assert.deepEqual(rebuildTarget([{ published_at: 'x', rebuild_build_id: 25 }], 30), { buildId: 25, serverReported: true });
+  });
+
+  test('a null rebuild_build_id means no rebuild, even with an active build', () => {
+    assert.deepEqual(rebuildTarget([{ rebuild_build_id: null }], 30), { buildId: null, serverReported: true });
+  });
+
+  test('takes the last non-null id across several publishes', () => {
+    assert.deepEqual(
+      rebuildTarget([{ rebuild_build_id: null }, { rebuild_build_id: 25 }, { rebuild_build_id: 26 }], 30),
+      { buildId: 26, serverReported: true },
+    );
+  });
+
+  test('falls back to the active build when the server leaves the field out', () => {
+    assert.deepEqual(rebuildTarget([{ published_at: 'x', emailed: false }], 30), { buildId: 30, serverReported: false });
+    assert.deepEqual(rebuildTarget([{ published_at: 'x' }], null), { buildId: null, serverReported: false });
   });
 });
