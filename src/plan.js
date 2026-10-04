@@ -18,7 +18,10 @@ const TIER_LABELS = { pro: 'Pro', pro_plus: 'Pro+' };
 function formatPlanRequiredMessage(err) {
   const label = TIER_LABELS[err?.requiredTier];
   const lines = [];
-  if (err?.message) lines.push(err.message, '');
+  // Server messages written for the editor may end in a relative "Upgrade at /pricing.";
+  // drop it so the absolute link below is the only one.
+  const reason = (err?.message || '').replace(/\s*Upgrade at \S+$/i, '').trim();
+  if (reason) lines.push(reason, '');
   lines.push(`This requires ${label ? `the ${label} plan` : 'a paid plan'}.`);
   lines.push('');
   lines.push(`Upgrade at: ${err?.upgradeUrl || PRICING_URL}`);
