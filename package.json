@@ -13,7 +13,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node -e \"require('./src/index.js')\"; node --test test/",
+    "test": "node -e \"require('./src/index.js')\"; node --test test/*.test.js test/*_test.mjs",
     "build:bin": "pkg . --targets node18-linux-x64,node18-macos-x64,node18-macos-arm64 --output dist/micropage",
     "build:linux": "pkg . --target node18-linux-x64 --output dist/micropage-linux-amd64",
     "build:macos-amd64": "pkg . --target node18-macos-x64 --output dist/micropage-darwin-amd64",
