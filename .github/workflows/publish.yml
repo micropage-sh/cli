@@ -1,0 +1,44 @@
+name: Publish
+
+# Publishes @micropage-sh/cli to npm on the same v* tags that release.yml
+# turns into binaries and the Homebrew formula.
+#
+# No secrets: npm trusted publishing is configured on npmjs.com for
+# micropage-sh/cli with workflow publish.yml, and proven with this workflow's
+# GitHub OIDC token (provenance is attached automatically).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Check tag matches package.json
+        run: |
+          pkg=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME#v}" = "$pkg" || {
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $pkg"; exit 1; }
+
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships 10.x.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm test
+      - run: npm publish --access public

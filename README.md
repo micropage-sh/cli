@@ -19,7 +19,7 @@ brew install micropage
 ### npm
 
 ```bash
-npm install -g micropage
+npm install -g @micropage-sh/cli
 ```
 
 ## Authentication
