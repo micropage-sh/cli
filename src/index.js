@@ -19,7 +19,7 @@ const program = new Command();
 
 program
   .name('micropage')
-  .description('CLI for micropage.sh – create, sync, and publish microsites')
+  .description('Micropage CLI: keep your .page files in git and publish static sites from the terminal')
   .version(version);
 
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ projectCmd
   .description('Create a new project and init local folder')
   .option(
     '-d, --domain <domain>',
-    'Override Cloudflare Pages project name / slug (default: server generates name-slug + 6 hex, max 58 chars)',
+    'Choose the project slug, which sets its address <domain>.micropage.sh (default: server generates name-slug + 6 hex, max 58 chars)',
   )
   .action((name, opts) => projects.create(name, opts));
 
@@ -87,7 +87,7 @@ projectCmd
 
 projectCmd
   .command('publish')
-  .description('Push local content and publish (deploy to Cloudflare Pages) — alias for `micropage publish`')
+  .description('Push local content and publish it live — alias for `micropage publish`')
   .option('-w, --watch', 'Stream build/deploy events after triggering publish')
   .action((opts) => builds.publish(opts));
 
@@ -152,7 +152,7 @@ program
 
 program
   .command('publish')
-  .description('Push local content and publish (deploy to Cloudflare Pages)')
+  .description('Push local content and publish it live')
   .option('-w, --watch', 'Stream build/deploy events after triggering publish')
   .action((opts) => builds.publish(opts));
 

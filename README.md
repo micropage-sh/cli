@@ -1,6 +1,6 @@
 # micropage CLI
 
-Command-line interface for [micropage.sh](https://app.micropage.sh) — create, edit, publish, and manage microsites from your terminal.
+Command-line interface for [micropage.sh](https://micropage.sh): keep your `.page` files in git and create, edit, publish and manage your sites from the terminal.
 
 ## Requirements
 
@@ -48,7 +48,7 @@ nano landing.page
 # Push local content as a draft build
 micropage push
 
-# Publish the current draft (deploys to Cloudflare Pages)
+# Publish the current draft (deploys it live)
 micropage publish
 
 # Pull the latest remote build content to landing.page
@@ -115,7 +115,7 @@ See [`micropage posts`](#posts) below for the full command set.
 |---|---|
 | `micropage projects list [--json]` | List your projects |
 | `micropage projects show [id] [--json]` | Show project + latest build details |
-| `micropage projects create <name> [-d domain]` | Create a project and init local folder. Omit `-d` to let the API assign `{slugified-name}-{6 hex}` (unique Pages/DNS label, max 58 chars). Use `-d` only to override the slug. |
+| `micropage projects create <name> [-d domain]` | Create a project and init local folder. Omit `-d` to let the API assign `{slugified-name}-{6 hex}` (unique `<slug>.micropage.sh` label, max 58 chars). Use `-d` only to override the slug. |
 | `micropage projects fetch <uuid\|domain>` | Fetch an existing project and init local folder (includes storage → `./assets` sync) |
 | `micropage projects pull` | Pull latest build raw content → `landing.page`, then sync `./assets` with project storage (1:1) |
 | `micropage projects delete [-y]` | Delete project (remote + local `.micropage/`) |
@@ -132,7 +132,7 @@ When you create a new project, the CLI also scaffolds:
 | Command | Description |
 |---|---|
 | `micropage push` | Merge local `.page` files and save as a draft build |
-| `micropage publish` | Push then deploy to Cloudflare Pages |
+| `micropage publish` | Push then deploy the site live |
 | `micropage builds list [--json]` | List builds for the current project |
 | `micropage builds redeploy [version]` | Re-publish an older build as a new deploy |
 | `micropage builds download [version] [-o file]` | Download a deployed build archive as a `.zip` file |
@@ -227,7 +227,7 @@ If the project folder contains a root-level `llms.txt`, its contents are publish
 Each project folder has a `.micropage/project.json` file that stores:
 - `projectId` — the Supabase project ID
 - `buildId` — the ID of the last draft/deployed build (auto-updated by push/pull)
-- `domain` — the Cloudflare Pages domain
+- `domain` — the project slug; the site lives at `<domain>.micropage.sh`
 - `name` — the project name
 
 Add `.micropage/` to your `.gitignore` if you share the content folder.
