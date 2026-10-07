@@ -37,7 +37,7 @@ if (!formulaPath) {
 const BASE_URL = `https://github.com/micropage-sh/cli/releases/download/v${version}`;
 
 const formula = `class Micropage < Formula
-  desc "CLI for micropage.sh - create, sync, and publish microsites"
+  desc "Keep .page files in git and publish static sites to micropage.sh"
   homepage "https://github.com/micropage-sh/cli"
   version "${version}"
   license "MIT"
