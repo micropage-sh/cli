@@ -12,7 +12,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const { fn, hashFile, uploadAssetWithToken } = require('./supabase');
+// Accessed through the module object (not destructured) so tests can stub calls.
+const supabase = require('./supabase');
 
 const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'];
 
@@ -41,7 +42,7 @@ function findCompanionImage(postFilePath) {
  * Callers should fetch this once per push and reuse it across posts.
  */
 async function fetchRemoteFileIndex(projectId) {
-  const data = await fn.invokeGet('list-files', { project_id: projectId });
+  const data = await supabase.fn.invokeGet('list-files', { project_id: projectId });
   const files = data?.files || [];
   const byFilename = new Map();
   const byHash = new Map();
@@ -49,35 +50,49 @@ async function fetchRemoteFileIndex(projectId) {
     if (f.filename) byFilename.set(f.filename, f);
     if (f.content_hash) byHash.set(f.content_hash, f);
   }
-  return { byFilename, byHash };
+  return { byFilename, byHash, urlById: new Map() };
 }
 
 /**
  * Resolve a `file_id` to its URL via the `get-file-url` edge function — the same
- * call the editor's image picker makes.
+ * call the editor's image picker makes. Memoized on `fileIndex` when given, since
+ * a push resolves every image twice when it has something to upload.
  */
-async function fileUrlFor(fileId) {
-  const data = await fn.invokeGet('get-file-url', { file_id: fileId });
+async function fileUrlFor(fileId, fileIndex = null) {
+  const cache = fileIndex?.urlById;
+  if (cache && cache.has(fileId)) return cache.get(fileId);
+  const data = await supabase.fn.invokeGet('get-file-url', { file_id: fileId });
   const url = data?.url;
   if (!url) throw new Error(`get-file-url returned no url for file_id=${fileId}`);
+  if (cache) cache.set(fileId, url);
   return url;
+}
+
+// Stand-in URL for an image that lookup mode found locally but that isn't
+// uploaded yet; it never equals a stored URL, so the post reads as changed.
+function pendingUploadUrl(hash) {
+  return `pending-upload:${hash}`;
 }
 
 /**
  * Upload a local file if its content hash isn't already present remotely
  * (dedup, mirrors uploadAssetsWithToken), then resolve its absolute URL.
  * Mutates `fileIndex` in place so repeated calls within the same push reuse it.
+ * With `upload: false` nothing is uploaded; a missing file comes back as
+ * `{ fileId: null, pending: true }`.
  */
-async function uploadLocalImageOnce(accessToken, projectId, filePath, fileIndex) {
+async function uploadLocalImageOnce(accessToken, projectId, filePath, fileIndex, upload = true) {
   const filename = path.basename(filePath);
-  const localHash = hashFile(filePath);
+  const localHash = supabase.hashFile(filePath);
 
   const existingByHash = fileIndex.byHash.get(localHash);
   if (existingByHash) {
     return { fileId: existingByHash.id, uploaded: false, filename: existingByHash.filename };
   }
 
-  const uploadResult = await uploadAssetWithToken(accessToken, projectId, filePath, filename);
+  if (!upload) return { fileId: null, uploaded: false, pending: true, hash: localHash, filename };
+
+  const uploadResult = await supabase.uploadAssetWithToken(accessToken, projectId, filePath, filename);
   const file = uploadResult?.file;
   if (!file?.id) throw new Error(`upload-file returned no file record for ${filename}`);
 
@@ -96,21 +111,29 @@ async function uploadLocalImageOnce(accessToken, projectId, filePath, fileIndex)
  *   - a local file path (relative to the post file, or to assets/) that exists on disk (upload)
  *   - an existing uploaded asset filename (resolve via list-files, no upload)
  *
- * @returns {Promise<{ url: string|null, uploaded: boolean, source: string|null }>}
+ * With `upload: false` (lookup mode) a local image that isn't uploaded yet is
+ * not uploaded: it is listed in `pendingUploads` and `url` is a placeholder.
+ *
+ * @returns {Promise<{ url: string|null, uploaded: boolean, source: string|null, pendingUploads: string[] }>}
  */
-async function resolveHeroImage({ accessToken, projectId, postFilePath, cwd, heroFrontMatter, fileIndex }) {
+async function resolveHeroImage({ accessToken, projectId, postFilePath, cwd, heroFrontMatter, fileIndex, upload = true }) {
+  const resolveLocal = async (localPath, kind) => {
+    const r = await uploadLocalImageOnce(accessToken, projectId, localPath, fileIndex, upload);
+    if (r.pending) {
+      return { url: pendingUploadUrl(r.hash), uploaded: false, source: `${kind}:${r.filename}`, pendingUploads: [r.filename] };
+    }
+    const url = await fileUrlFor(r.fileId, fileIndex);
+    return { url, uploaded: r.uploaded, source: `${kind}:${r.filename}`, pendingUploads: [] };
+  };
+
   const companion = findCompanionImage(postFilePath);
-  if (companion) {
-    const { fileId, uploaded, filename } = await uploadLocalImageOnce(accessToken, projectId, companion, fileIndex);
-    const url = await fileUrlFor(fileId);
-    return { url, uploaded, source: `companion:${filename}` };
-  }
+  if (companion) return resolveLocal(companion, 'companion');
 
   const hero = typeof heroFrontMatter === 'string' ? heroFrontMatter.trim() : '';
-  if (!hero) return { url: null, uploaded: false, source: null };
+  if (!hero) return { url: null, uploaded: false, source: null, pendingUploads: [] };
 
   if (isAbsoluteUrl(hero)) {
-    return { url: hero, uploaded: false, source: 'url' };
+    return { url: hero, uploaded: false, source: 'url', pendingUploads: [] };
   }
 
   // Local file path: relative to the post file's directory, then to assets/, then to cwd.
@@ -120,17 +143,13 @@ async function resolveHeroImage({ accessToken, projectId, postFilePath, cwd, her
     path.join(cwd, hero),
   ];
   const localPath = candidates.find((p) => fs.existsSync(p) && fs.statSync(p).isFile());
-  if (localPath) {
-    const { fileId, uploaded, filename } = await uploadLocalImageOnce(accessToken, projectId, localPath, fileIndex);
-    const url = await fileUrlFor(fileId);
-    return { url, uploaded, source: `local:${filename}` };
-  }
+  if (localPath) return resolveLocal(localPath, 'local');
 
   // Existing uploaded asset, referenced by filename only.
   const existing = fileIndex.byFilename.get(hero) || fileIndex.byFilename.get(path.basename(hero));
   if (existing) {
-    const url = await fileUrlFor(existing.id);
-    return { url, uploaded: false, source: `existing:${existing.filename}` };
+    const url = await fileUrlFor(existing.id, fileIndex);
+    return { url, uploaded: false, source: `existing:${existing.filename}`, pendingUploads: [] };
   }
 
   throw new Error(`hero image not found: "${hero}" (not a URL, local file, or existing uploaded asset)`);
@@ -149,9 +168,12 @@ const MD_IMAGE_RE = /!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
  * resolve to a file on disk are reported in `unresolved` so the caller can warn —
  * otherwise a typo'd path would ship into body_markdown and 404 on the live page.
  *
- * @returns {Promise<{ markdown: string, uploaded: string[], mapping: Record<string,string>, unresolved: string[] }>}
+ * With `upload: false` (lookup mode) images not uploaded yet are listed in
+ * `pendingUploads` and rewritten to a placeholder instead of being uploaded.
+ *
+ * @returns {Promise<{ markdown: string, uploaded: string[], mapping: Record<string,string>, unresolved: string[], pendingUploads: string[] }>}
  */
-async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, body, fileIndex }) {
+async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, body, fileIndex, upload = true }) {
   const refs = [];
   let match;
   MD_IMAGE_RE.lastIndex = 0;
@@ -162,6 +184,7 @@ async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, bo
   const mapping = {};
   const uploaded = [];
   const unresolved = [];
+  const pendingUploads = [];
 
   for (const ref of refs) {
     if (mapping[ref] || isAbsoluteUrl(ref) || ref.startsWith('/') || ref.startsWith('#')) continue;
@@ -178,19 +201,25 @@ async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, bo
       continue;
     }
 
-    const { fileId, uploaded: wasUploaded, filename } = await uploadLocalImageOnce(
+    const { fileId, uploaded: wasUploaded, filename, pending, hash } = await uploadLocalImageOnce(
       accessToken,
       projectId,
       localPath,
       fileIndex,
+      upload,
     );
-    const url = await fileUrlFor(fileId);
+    if (pending) {
+      mapping[ref] = pendingUploadUrl(hash);
+      if (!pendingUploads.includes(filename)) pendingUploads.push(filename);
+      continue;
+    }
+    const url = await fileUrlFor(fileId, fileIndex);
     mapping[ref] = url;
     if (wasUploaded) uploaded.push(filename);
   }
 
   if (Object.keys(mapping).length === 0) {
-    return { markdown: body, uploaded, mapping, unresolved };
+    return { markdown: body, uploaded, mapping, unresolved, pendingUploads };
   }
 
   MD_IMAGE_RE.lastIndex = 0;
@@ -199,7 +228,7 @@ async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, bo
     return resolved ? `![${alt}](${resolved})` : full;
   });
 
-  return { markdown: rewritten, uploaded, mapping, unresolved };
+  return { markdown: rewritten, uploaded, mapping, unresolved, pendingUploads };
 }
 
 module.exports = {

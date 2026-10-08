@@ -77,6 +77,7 @@ date: 2026-07-07
 description: A short summary for the archive, meta description, and og tags.
 visibility: listed
 hero: ./hello.jpg
+email: true
 list: newsletter
 subject: Hello, world!
 preview: The first post on this site.
@@ -85,11 +86,16 @@ preview: The first post on this site.
 Body content goes here as standard Markdown.
 ```
 
-`title` is required. `slug` defaults to the filename minus a leading `YYYY-MM-DD-` date prefix. `date` is the post's public date: `YYYY-MM-DD` (midnight UTC) or a full ISO timestamp; it sets the published date of a live post, and a draft keeps it until its first publish. Omit it to use the publish time. Future dates are rejected (scheduling isn't supported); `posts pull` writes it back as the UTC day for published posts. `visibility` is `listed` (default, appears in the site's `/content` index) or `unlisted`. `list` names a newsletter form and is required to email the post on publish. Local image references in the body are auto-uploaded and rewritten to hosted URLs on `push`.
+`title` is required. `slug` defaults to the filename minus a leading `YYYY-MM-DD-` date prefix. `date` is the post's public date: `YYYY-MM-DD` (midnight UTC) or a full ISO timestamp; it sets the published date of a live post, and a draft keeps it until its first publish. Omit it to use the publish time. Future dates are rejected (scheduling isn't supported); `posts pull` writes it back as the UTC day for published posts. `visibility` is `listed` (default, appears in the site's `/content` index), `unlisted`, or `none` (email only, no web page). `email: true` plus `list` (the name of a newsletter form) emails the post on publish. Local image references in the body are auto-uploaded and rewritten to hosted URLs on `push`.
+
+`posts push` only saves posts that are new or changed, and reports each one as `created`, `updated (<fields>)` or `unchanged`. It remembers what it last pushed or pulled in `.micropage/posts-sync.json`, and won't overwrite a post that was edited remotely (for example in the web editor) since then: if only the remote changed it reports `skipped` (run `posts pull <slug>` to update your file); if both changed it reports `CONFLICT` and exits non-zero. Pass `--force` to overwrite the remote anyway, or `--dry-run` to see what would happen without uploading or saving anything. Posts that have no sync record yet (the first push from a checkout) are pushed when they differ, without that check. Pass slugs to push or pull only those posts.
 
 ```bash
-# Save posts/hello.md as a draft
+# Save new and changed posts as drafts (or updates)
 micropage posts push
+
+# Preview what a push would do
+micropage posts push --dry-run
 
 # Publish it (and email the `list:` target, if set)
 micropage posts publish hello
@@ -157,10 +163,10 @@ When you create a new project, the CLI also scaffolds:
 
 | Command | Description |
 |---|---|
-| `micropage posts push` | Save local `posts/*.md` files as post drafts (or update already-published posts, which go live immediately) |
-| `micropage posts publish [slug] [-w]` | Publish a post (or all local posts) to the web; sends the newsletter email if the post has a `list:`. Re-running re-sends the email. Auto-queues a rebuild of the site so the `/content` archive updates — no separate `micropage publish` needed. Use `-w` to stream the rebuild's deploy events until it's live. |
+| `micropage posts push [slugs...] [-f] [-n]` | Save new and changed local `posts/*.md` files as post drafts (or update already-published posts, which go live immediately). Unchanged posts are skipped; posts edited remotely since the last push or pull are not overwritten unless `-f`/`--force`. `-n`/`--dry-run` only reports what would happen. |
+| `micropage posts publish [slug] [-w] [--resend]` | Publish a post, or every local post that is still a draft; sends the newsletter email if the post has `email: true` and a `list:`. Without a slug, already-live posts and already-emailed posts are skipped. Publishing an email post by slug that is already published, or was emailed before (even if since unpublished), re-sends the email and requires `--resend`. Auto-queues a rebuild of the site so the `/content` archive updates — no separate `micropage publish` needed. Use `-w` to stream the rebuild's deploy events until it's live. |
 | `micropage posts unpublish <slug>` | Remove a post's `/content/<slug>` page; the post remains as a draft |
-| `micropage posts pull` | Pull remote posts down to local `posts/*.md` files |
+| `micropage posts pull [slugs...] [-f]` | Pull remote posts (or only the given slugs) down to local `posts/*.md` files; files that already match are left alone, others prompt before being overwritten unless `-f` |
 | `micropage posts list` | List the project's posts (slug, title, visibility, published/draft, emailed, send status, created). "Send status" is the newsletter send lifecycle and shows only for email posts — it does not reflect deploy state. |
 | `micropage posts rm <slug>` | Delete a post entirely (remote) |
 

@@ -15,6 +15,18 @@ const {
 const { getProjectConfig } = require('../auth');
 const { formatTable, formatDate } = require('../utils');
 const { fetchRemoteFileIndex, resolveHeroImage, resolveBodyImages } = require('../posts-assets');
+const {
+  SYNC_STATE_FILE,
+  localModel,
+  diffFields,
+  classify,
+  fieldLabels,
+  loadSyncState,
+  saveSyncState,
+  findBaselineBySlug,
+  recordSynced,
+  recordUnconfirmed,
+} = require('../posts-sync');
 
 const POSTS_DIR = 'posts';
 
@@ -62,34 +74,49 @@ function slugify(s) {
     .replace(/^-+|-+$/g, '');
 }
 
-/** Resolve `list: <form name>` -> form_id via the `forms` table (case-insensitive, newsletter forms only). */
-async function resolveFormId(projectId, listName) {
-  const name = String(listName).trim();
-  let forms;
+async function fetchNewsletterForms(projectId) {
   try {
-    forms = await db
+    const forms = await db
       .from('forms')
       .select('id,form_name,is_newsletter')
       .eq('project_id', projectId)
       .eq('is_newsletter', true)
       .get();
+    return forms || [];
   } catch (err) {
     handleAuthError(err);
-    throw new Error(`Failed to look up form "${name}": ${err.message}`);
+    throw err;
   }
+}
 
-  const matches = (forms || []).filter(
-    (f) => String(f.form_name || '').toLowerCase() === name.toLowerCase(),
-  );
-  if (matches.length === 0) {
-    throw new Error(
-      `No newsletter form named "${name}" found for this project. Check "micropage forms list".`,
-    );
-  }
-  if (matches.length > 1) {
-    throw new Error(`Multiple newsletter forms named "${name}" found — ambiguous. Rename one to disambiguate.`);
-  }
-  return matches[0].id;
+/**
+ * Returns `list: <form name>` -> form_id resolution (case-insensitive,
+ * newsletter forms only). The project's forms are fetched once, on first use.
+ */
+function makeListResolver(projectId, preloadedForms = null) {
+  let formsPromise = preloadedForms ? Promise.resolve(preloadedForms) : null;
+  return async (listName) => {
+    const name = String(listName).trim();
+    if (!formsPromise) formsPromise = fetchNewsletterForms(projectId);
+    let forms;
+    try {
+      forms = await formsPromise;
+    } catch (err) {
+      formsPromise = null;
+      throw new Error(`Failed to look up form "${name}": ${err.message}`);
+    }
+
+    const matches = forms.filter((f) => String(f.form_name || '').toLowerCase() === name.toLowerCase());
+    if (matches.length === 0) {
+      throw new Error(
+        `No newsletter form named "${name}" found for this project. Check "micropage forms list".`,
+      );
+    }
+    if (matches.length > 1) {
+      throw new Error(`Multiple newsletter forms named "${name}" found — ambiguous. Rename one to disambiguate.`);
+    }
+    return matches[0].id;
+  };
 }
 
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -161,7 +188,11 @@ function normalizePostDate(value, now = new Date()) {
   return normalized;
 }
 
-function frontMatterFromPost(post) {
+/**
+ * Front-matter for a pulled post. `formNameById` maps newsletter form ids to
+ * names so an email post gets the `list:` that push needs to keep emailing it.
+ */
+function frontMatterFromPost(post, formNameById = new Map()) {
   const fmData = {
     title: post.title || '',
   };
@@ -178,7 +209,11 @@ function frontMatterFromPost(post) {
   if (post.description) fmData.description = post.description;
   if (post.web_visibility && post.web_visibility !== 'listed') fmData.visibility = post.web_visibility;
   if (post.hero_image) fmData.hero = post.hero_image;
-  if (post.email_enabled) fmData.email = true;
+  if (post.email_enabled) {
+    fmData.email = true;
+    const listName = post.form_id ? formNameById.get(post.form_id) : null;
+    if (listName) fmData.list = listName;
+  }
   if (post.subject && post.subject !== post.title) fmData.subject = post.subject;
   if (post.preheader) fmData.preview = post.preheader;
   return fmData;
@@ -188,10 +223,143 @@ function frontMatterFromPost(post) {
 // posts push
 // ---------------------------------------------------------------------------
 
-async function push(options = {}) {
+const POST_SYNC_COLUMNS =
+  'id,slug,title,description,body_markdown,web_visibility,hero_image,form_id,subject,preheader,published_at,date_override,email_enabled';
+
+const VISIBILITY_VALUES = ['listed', 'unlisted', 'none'];
+
+function slugForFile(filePath, fm) {
+  return fm.slug ? slugify(String(fm.slug)) : slugify(defaultSlugFromFilename(filePath));
+}
+
+/** Parse a local post file far enough to know its slug. Throws with a user-facing message. */
+function readLocalPost(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    throw new Error(`failed to read (${err.message})`);
+  }
+  let parsed;
+  try {
+    parsed = matter(raw);
+  } catch (err) {
+    throw new Error(`invalid front-matter (${err.message})`);
+  }
+  const fm = parsed.data || {};
+  return { fm, content: parsed.content || '', slug: slugForFile(filePath, fm) };
+}
+
+/**
+ * Build the upsert-post payload for a local post. With `upload: false`, local
+ * images that aren't uploaded yet are listed in `pendingUploads` rather than
+ * uploaded. Throws with a user-facing message.
+ */
+async function buildPostPayload({ filePath, fm, content, slug, cwd, projectId, accessToken, fileIndex, resolveList, upload }) {
+  const title = typeof fm.title === 'string' ? fm.title.trim() : '';
+  if (!title) throw new Error('missing required front-matter field "title"');
+  if (!slug) throw new Error('could not derive a slug (set "slug:" in front-matter)');
+
+  const visibility = fm.visibility || 'listed';
+  if (!VISIBILITY_VALUES.includes(visibility)) {
+    throw new Error(`invalid "visibility" (${visibility}); use listed, unlisted or none`);
+  }
+
+  const postDate = normalizePostDate(fm.date);
+
+  let formId = null;
+  if (fm.email === true) {
+    if (!fm.list) throw new Error('"email: true" requires a "list:" front-matter field');
+    formId = await resolveList(fm.list);
+  }
+
+  const hero = await resolveHeroImage({
+    accessToken,
+    projectId,
+    postFilePath: filePath,
+    cwd,
+    heroFrontMatter: fm.hero,
+    fileIndex,
+    upload,
+  });
+
+  let resolvedBody;
+  try {
+    resolvedBody = await resolveBodyImages({
+      accessToken,
+      projectId,
+      postFilePath: filePath,
+      cwd,
+      body: content,
+      fileIndex,
+      upload,
+    });
+  } catch (err) {
+    throw new Error(`failed to resolve body images (${err.message})`);
+  }
+
+  const payload = {
+    project_id: projectId,
+    title,
+    slug,
+    body_markdown: resolvedBody.markdown,
+    description: fm.description || null,
+    web_visibility: visibility,
+    hero_image: hero.url,
+    form_id: formId,
+    subject: fm.subject || null,
+    preheader: fm.preview || null,
+  };
+  // An explicit null tells the server the file has no date:, so a held draft date is cleared.
+  payload.date = postDate || null;
+
+  const pendingUploads = [...new Set([...(hero.pendingUploads || []), ...(resolvedBody.pendingUploads || [])])];
+  return { payload, pendingUploads, unresolved: resolvedBody.unresolved || [] };
+}
+
+const BLOCKED_STATES = new Set(['behind', 'conflict', 'deleted-remotely', 'renamed-remotely']);
+
+function blockedMessage(cls, slug) {
+  switch (cls.state) {
+    case 'behind':
+      return `skipped, remote changed since last sync (edited in the editor?). Run "micropage posts pull ${slug}" to update your file.`;
+    case 'conflict':
+      return `CONFLICT, changed locally and remotely since last sync. Not pushed. Save your edits, then "micropage posts pull ${slug}", or overwrite the remote with "micropage posts push ${slug} --force".`;
+    case 'deleted-remotely':
+      return `skipped, deleted remotely since last sync. Remove the file, or recreate the post with "micropage posts push ${slug} --force".`;
+    case 'renamed-remotely':
+      return `skipped, renamed remotely to "${cls.renamedTo}". Run "micropage posts pull ${cls.renamedTo}" and remove this file, or create a separate post with "micropage posts push ${slug} --force".`;
+    default:
+      return 'skipped';
+  }
+}
+
+/** What a push of a classified post does, e.g. `updated (body, hero)`. */
+function describePush(cls, dryRun = false) {
+  const fields = fieldLabels(cls.fields).join(', ');
+  switch (cls.state) {
+    case 'created':
+      return 'created';
+    case 'deleted-remotely':
+      return 'created (was deleted remotely)';
+    case 'renamed-remotely':
+      return `created (the post this file was synced with is now "${cls.renamedTo}")`;
+    case 'behind':
+    case 'conflict':
+      return `updated (${fields}; ${dryRun ? 'would overwrite' : 'overwrote'} remote changes)`;
+    default:
+      return cls.noBaseline
+        ? `updated (${fields}; no sync record, remote edits not checked)`
+        : `updated (${fields})`;
+  }
+}
+
+async function push(slugArgs = [], options = {}) {
   const cwd = process.cwd();
   const config = requireProjectConfig(cwd);
   const postsDir = requirePostsDir(cwd);
+  const dryRun = Boolean(options.dryRun);
+  const force = Boolean(options.force);
 
   const localFiles = listLocalPostFiles(postsDir);
   if (localFiles.length === 0) {
@@ -208,12 +376,12 @@ async function push(options = {}) {
     process.exit(1);
   }
 
-  // Fetch remote posts once, both to report drift and to know created vs. updated.
+  // Fetch remote posts once: change detection, created vs. updated, and the drift report.
   let remotePosts = [];
   try {
     remotePosts = await db
       .from('posts')
-      .select('id,slug,title,web_visibility,email_enabled,status,published_at,created_at')
+      .select(POST_SYNC_COLUMNS)
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')
       .get();
@@ -222,7 +390,9 @@ async function push(options = {}) {
     console.error('Failed to fetch remote posts:', err.message);
     process.exit(1);
   }
-  const remoteBySlug = new Map((remotePosts || []).map((p) => [p.slug, p]));
+  remotePosts = remotePosts || [];
+  const remoteBySlug = new Map(remotePosts.map((p) => [p.slug, p]));
+  const remoteById = new Map(remotePosts.map((p) => [String(p.id), p]));
 
   let fileIndex;
   try {
@@ -233,151 +403,201 @@ async function push(options = {}) {
     process.exit(1);
   }
 
+  const resolveList = makeListResolver(config.projectId);
+  const state = loadSyncState(cwd, config.projectId);
+  let stateDirty = false;
+
+  const wanted = slugArgs.length > 0 ? new Set(slugArgs.map((s) => slugify(String(s)))) : null;
+  const found = new Set();
   const localSlugs = new Set();
-  const summary = [];
+  const counts = { created: 0, updated: 0, unchanged: 0, skipped: 0, conflict: 0, failed: 0 };
+  const pushed = [];
   let hadError = false;
 
   for (const filePath of localFiles) {
     const relName = path.relative(cwd, filePath);
-    let raw;
+
+    let post;
     try {
-      raw = fs.readFileSync(filePath, 'utf8');
+      post = readLocalPost(filePath);
     } catch (err) {
-      console.error(`${relName}: failed to read (${err.message})`);
-      hadError = true;
-      continue;
-    }
-
-    let parsed;
-    try {
-      parsed = matter(raw);
-    } catch (err) {
-      console.error(`${relName}: invalid front-matter (${err.message})`);
-      hadError = true;
-      continue;
-    }
-
-    const fm = parsed.data || {};
-    const title = typeof fm.title === 'string' ? fm.title.trim() : '';
-    if (!title) {
-      console.error(`${relName}: missing required front-matter field "title"`);
-      hadError = true;
-      continue;
-    }
-
-    const slug = fm.slug ? slugify(String(fm.slug)) : slugify(defaultSlugFromFilename(filePath));
-    if (!slug) {
-      console.error(`${relName}: could not derive a slug (set "slug:" in front-matter)`);
-      hadError = true;
-      continue;
-    }
-    localSlugs.add(slug);
-
-    const visibility = fm.visibility || 'listed';
-    if (!['listed', 'unlisted'].includes(visibility)) {
-      console.error(`${relName}: invalid "visibility" (${visibility}); use listed or unlisted`);
-      hadError = true;
-      continue;
-    }
-
-    let postDate;
-    try {
-      postDate = normalizePostDate(fm.date);
-    } catch (err) {
+      // With slugs given, an unreadable file can only be matched by its filename;
+      // other requested slugs with no readable file are reported below.
+      if (wanted) {
+        const fileSlug = slugify(defaultSlugFromFilename(filePath));
+        if (!wanted.has(fileSlug)) continue;
+        found.add(fileSlug);
+      }
       console.error(`${relName}: ${err.message}`);
+      counts.failed += 1;
       hadError = true;
       continue;
     }
-
-    const emailWanted = fm.email === true;
-    let formId = null;
-    if (emailWanted) {
-      if (!fm.list) {
-        console.error(`${relName}: "email: true" requires a "list:" front-matter field`);
-        hadError = true;
-        continue;
-      }
-      try {
-        formId = await resolveFormId(config.projectId, fm.list);
-      } catch (err) {
-        console.error(`${relName}: ${err.message}`);
-        hadError = true;
-        continue;
-      }
+    if (wanted && !wanted.has(post.slug)) continue;
+    if (post.slug) {
+      localSlugs.add(post.slug);
+      found.add(post.slug);
     }
 
-    let heroUrl = null;
-    try {
-      const hero = await resolveHeroImage({
-        accessToken,
-        projectId: config.projectId,
-        postFilePath: filePath,
-        cwd,
-        heroFrontMatter: fm.hero,
-        fileIndex,
-      });
-      heroUrl = hero.url;
-    } catch (err) {
-      console.error(`${relName}: ${err.message}`);
-      hadError = true;
-      continue;
-    }
-
-    let bodyMarkdown;
-    try {
-      const resolvedBody = await resolveBodyImages({
-        accessToken,
-        projectId: config.projectId,
-        postFilePath: filePath,
-        cwd,
-        body: parsed.content || '',
-        fileIndex,
-      });
-      bodyMarkdown = resolvedBody.markdown;
-      if (resolvedBody.unresolved && resolvedBody.unresolved.length > 0) {
-        console.warn(
-          `${relName}: warning — ${resolvedBody.unresolved.length} body image(s) not found locally, shipped as-is (will 404 if unhosted): ${resolvedBody.unresolved.join(', ')}`,
-        );
-      }
-    } catch (err) {
-      console.error(`${relName}: failed to resolve body images (${err.message})`);
-      hadError = true;
-      continue;
-    }
-
-    const payload = {
-      project_id: config.projectId,
-      title,
-      slug,
-      body_markdown: bodyMarkdown,
-      description: fm.description || null,
-      web_visibility: visibility,
-      hero_image: heroUrl,
-      form_id: formId,
-      subject: fm.subject || null,
-      preheader: fm.preview || null,
+    const buildArgs = {
+      filePath,
+      fm: post.fm,
+      content: post.content,
+      slug: post.slug,
+      cwd,
+      projectId: config.projectId,
+      accessToken,
+      fileIndex,
+      resolveList,
     };
-    // An explicit null tells the server the file has no date:, so a held draft date is cleared.
-    payload.date = postDate || null;
+
+    // Lookup pass: resolve images without uploading so an unchanged post costs no writes.
+    let built;
+    try {
+      built = await buildPostPayload({ ...buildArgs, upload: false });
+    } catch (err) {
+      handleAuthError(err);
+      console.error(`${relName}: ${err.message}`);
+      counts.failed += 1;
+      hadError = true;
+      continue;
+    }
+    if (built.unresolved.length > 0) {
+      console.warn(
+        `${relName}: warning — ${built.unresolved.length} body image(s) not found locally, shipped as-is (will 404 if unhosted): ${built.unresolved.join(', ')}`,
+      );
+    }
+
+    const local = localModel(built.payload);
+    const remote = remoteBySlug.get(post.slug) || null;
+    let baseline = null;
+    let baselineRemote = null;
+    if (remote) {
+      baseline = state.posts[String(remote.id)] || null;
+    } else {
+      const entry = findBaselineBySlug(state, post.slug);
+      if (entry) {
+        baseline = entry.entry;
+        baselineRemote = remoteById.get(entry.id) || null;
+      }
+    }
+    const cls = classify({ local, remote, baseline, baselineRemote });
+    const prefix = `${relName} -> "${post.slug}"`;
+
+    if (cls.state === 'unchanged') {
+      counts.unchanged += 1;
+      console.log(`${prefix}: unchanged`);
+      if (!dryRun) {
+        recordSynced(state, remote, local);
+        stateDirty = true;
+      }
+      continue;
+    }
+
+    if (BLOCKED_STATES.has(cls.state) && !force) {
+      const msg = `${prefix}: ${blockedMessage(cls, post.slug)}`;
+      if (cls.state === 'conflict') counts.conflict += 1;
+      else counts.skipped += 1;
+      if (cls.state === 'behind') {
+        console.log(msg);
+      } else {
+        console.error(msg);
+        hadError = true;
+      }
+      continue;
+    }
+
+    const detail = describePush(cls, dryRun);
+    const countKey = remote ? 'updated' : 'created';
+
+    if (dryRun) {
+      const uploads = built.pendingUploads.length > 0 ? `, would upload ${built.pendingUploads.length} image(s)` : '';
+      console.log(`${prefix}: would be ${detail}${uploads}`);
+      counts[countKey] += 1;
+      continue;
+    }
+
+    let payload = built.payload;
+    let syncedLocal = local;
+    if (built.pendingUploads.length > 0) {
+      try {
+        payload = (await buildPostPayload({ ...buildArgs, upload: true })).payload;
+        syncedLocal = localModel(payload);
+      } catch (err) {
+        handleAuthError(err);
+        console.error(`${relName}: ${err.message}`);
+        counts.failed += 1;
+        hadError = true;
+        continue;
+      }
+    }
 
     try {
       const result = await fn.invoke('upsert-post', payload);
-      const note = `${result.action}, saved (${result.published ? 'live' : 'draft'})`;
-      summary.push({ file: relName, slug, ok: true, note });
-      console.log(`${relName} -> "${slug}": ${note}`);
+      const where = result.published ? (result.rebuild_build_id ? 'live; site rebuild queued' : 'live') : 'draft';
+      console.log(`${prefix}: ${detail}, saved (${where})`);
+      counts[result.action === 'created' ? 'created' : 'updated'] += 1;
+      pushed.push({ postId: result.post_id, slug: post.slug, local: syncedLocal });
     } catch (err) {
       handleAuthError(err);
       const msg = err.status === 409 ? 'slug already in use for another post' : err.message;
       console.error(`${relName}: upsert failed (${msg})`);
-      summary.push({ file: relName, slug, ok: false, note: msg });
+      counts.failed += 1;
       hadError = true;
     }
   }
 
+  if (wanted) {
+    for (const slug of wanted) {
+      if (found.has(slug)) continue;
+      console.error(`"${slug}": no post file in "${POSTS_DIR}/" with this slug`);
+      counts.failed += 1;
+      hadError = true;
+    }
+  }
+
+  // The baseline is the row as the server stored it, read back once for all
+  // pushed posts. A row that differs from what was pushed was edited in between.
+  if (pushed.length > 0) {
+    let rows = [];
+    try {
+      rows =
+        (await db
+          .from('posts')
+          .select(POST_SYNC_COLUMNS)
+          .eq('project_id', config.projectId)
+          .in('slug', pushed.map((p) => p.slug))
+          .get()) || [];
+    } catch (err) {
+      handleAuthError(err);
+      console.warn(
+        `Warning: could not read back the pushed posts (${err.message}); the next push re-checks them against the remote.`,
+      );
+    }
+    const rowsBySlug = new Map(rows.map((r) => [r.slug, r]));
+    for (const p of pushed) {
+      const row = rowsBySlug.get(p.slug);
+      if (row && String(row.id) === String(p.postId) && diffFields(p.local, row).length === 0) {
+        recordSynced(state, row, p.local);
+      } else {
+        recordUnconfirmed(state, p.postId, p.slug, p.local);
+      }
+    }
+    stateDirty = true;
+  }
+
+  if (stateDirty && !dryRun) {
+    try {
+      saveSyncState(cwd, state);
+    } catch (err) {
+      console.warn(`Warning: could not save ${SYNC_STATE_FILE} (${err.message}).`);
+    }
+  }
+
   // Drift report: remote posts with no matching local file. Never deleted here.
-  const driftSlugs = (remotePosts || [])
-    .map((p) => p.slug)
-    .filter((slug) => slug && !localSlugs.has(slug));
+  const driftSlugs = wanted
+    ? []
+    : remotePosts.map((p) => p.slug).filter((slug) => slug && !localSlugs.has(slug));
   if (driftSlugs.length > 0) {
     console.log('');
     console.log(
@@ -387,8 +607,8 @@ async function push(options = {}) {
   }
 
   console.log('');
-  const okCount = summary.filter((s) => s.ok).length;
-  console.log(`Pushed ${okCount}/${summary.length} post(s).`);
+  const tally = `${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged, ${counts.skipped} skipped, ${counts.conflict} conflict, ${counts.failed} failed.`;
+  console.log(dryRun ? `Dry run, nothing written: ${tally}` : tally);
 
   if (hadError) process.exit(1);
 }
@@ -397,7 +617,7 @@ async function push(options = {}) {
 // posts pull
 // ---------------------------------------------------------------------------
 
-async function pull(options = {}) {
+async function pull(slugArgs = [], options = {}) {
   const cwd = process.cwd();
   const config = requireProjectConfig(cwd);
   const postsDir = path.join(cwd, POSTS_DIR);
@@ -407,9 +627,7 @@ async function pull(options = {}) {
   try {
     remotePosts = await db
       .from('posts')
-      .select(
-        'id,slug,title,description,body_markdown,web_visibility,email_enabled,status,hero_image,published_at,date_override,created_at',
-      )
+      .select(`${POST_SYNC_COLUMNS},status,created_at`)
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')
       .get();
@@ -418,11 +636,67 @@ async function pull(options = {}) {
     console.error('Failed to fetch remote posts:', err.message);
     process.exit(1);
   }
+  remotePosts = Array.isArray(remotePosts) ? remotePosts : [];
 
-  if (!Array.isArray(remotePosts) || remotePosts.length === 0) {
-    console.log('No remote posts to pull.');
+  let hadError = false;
+  if (slugArgs.length > 0) {
+    const wanted = new Set(slugArgs.map((s) => slugify(String(s))));
+    for (const slug of wanted) {
+      if (!remotePosts.some((p) => p.slug === slug)) {
+        console.error(`"${slug}": no remote post with this slug`);
+        hadError = true;
+      }
+    }
+    remotePosts = remotePosts.filter((p) => wanted.has(p.slug));
+  }
+
+  if (remotePosts.length === 0) {
+    if (!hadError) console.log('No remote posts to pull.');
+    if (hadError) process.exit(1);
     return;
   }
+
+  let forms = null;
+  try {
+    forms = await fetchNewsletterForms(config.projectId);
+  } catch (err) {
+    console.warn(`Warning: could not load newsletter forms (${err.message}); email posts are written without "list:".`);
+  }
+  const formNameById = new Map((forms || []).map((f) => [f.id, f.form_name]));
+  const resolveList = makeListResolver(config.projectId, forms);
+  const state = loadSyncState(cwd, config.projectId);
+  let stateDirty = false;
+
+  let fileIndexPromise = null;
+  const getFileIndex = () => {
+    if (!fileIndexPromise) fileIndexPromise = fetchRemoteFileIndex(config.projectId);
+    return fileIndexPromise;
+  };
+
+  // A local file counts as current when pushing it would change nothing.
+  const localMatches = async (filePath, post) => {
+    try {
+      const local = readLocalPost(filePath);
+      if (local.slug !== post.slug) return null;
+      const built = await buildPostPayload({
+        filePath,
+        fm: local.fm,
+        content: local.content,
+        slug: local.slug,
+        cwd,
+        projectId: config.projectId,
+        accessToken: null,
+        fileIndex: await getFileIndex(),
+        resolveList,
+        upload: false,
+      });
+      const model = localModel(built.payload);
+      return diffFields(model, post).length === 0 ? model : null;
+    } catch (err) {
+      handleAuthError(err);
+      return null;
+    }
+  };
 
   let rl = null;
   const confirmOverwrite = async (filename) => {
@@ -438,6 +712,7 @@ async function pull(options = {}) {
   };
 
   let written = 0;
+  let unchanged = 0;
   let skipped = 0;
 
   for (const post of remotePosts) {
@@ -450,6 +725,14 @@ async function pull(options = {}) {
     const filePath = path.join(postsDir, filename);
 
     if (fs.existsSync(filePath)) {
+      const current = await localMatches(filePath, post);
+      if (current) {
+        console.log(`${path.relative(cwd, filePath)}: unchanged`);
+        recordSynced(state, post, current);
+        stateDirty = true;
+        unchanged += 1;
+        continue;
+      }
       const ok = await confirmOverwrite(filename);
       if (!ok) {
         skipped += 1;
@@ -457,17 +740,54 @@ async function pull(options = {}) {
       }
     }
 
-    const fmData = frontMatterFromPost(post);
+    const fmData = frontMatterFromPost(post, formNameById);
     const content = matter.stringify(post.body_markdown || '', fmData);
     fs.writeFileSync(filePath, content, 'utf8');
     written += 1;
     console.log(`Wrote ${path.relative(cwd, filePath)}`);
+
+    let pulledDate = null;
+    try {
+      pulledDate = normalizePostDate(fmData.date);
+    } catch {
+      pulledDate = null;
+    }
+    recordSynced(
+      state,
+      post,
+      localModel({
+        slug: post.slug,
+        title: post.title,
+        body_markdown: post.body_markdown,
+        description: post.description,
+        hero_image: post.hero_image,
+        web_visibility: post.web_visibility,
+        form_id: fmData.list ? post.form_id : null,
+        subject: fmData.subject || null,
+        preheader: post.preheader,
+        date: pulledDate,
+      }),
+    );
+    stateDirty = true;
   }
 
   if (rl) rl.close();
 
+  if (stateDirty) {
+    try {
+      saveSyncState(cwd, state);
+    } catch (err) {
+      console.warn(`Warning: could not save ${SYNC_STATE_FILE} (${err.message}).`);
+    }
+  }
+
   console.log('');
-  console.log(`Pulled ${written} post(s)${skipped > 0 ? `, skipped ${skipped}` : ''}.`);
+  const extras = [];
+  if (unchanged > 0) extras.push(`${unchanged} unchanged`);
+  if (skipped > 0) extras.push(`skipped ${skipped}`);
+  console.log(`Pulled ${written} post(s)${extras.length > 0 ? `, ${extras.join(', ')}` : ''}.`);
+
+  if (hadError) process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -561,10 +881,21 @@ function localSlugsFromPostsDir(postsDir) {
     } catch {
       continue;
     }
-    const slug = fm.slug ? slugify(String(fm.slug)) : slugify(defaultSlugFromFilename(filePath));
+    const slug = slugForFile(filePath, fm);
     if (slug) slugs.push(slug);
   }
   return slugs;
+}
+
+/** Whether publish-post has already queued or sent this post's email. */
+function wasEmailed(row) {
+  return (
+    Number(row.sent_count) > 0 ||
+    Number(row.recipient_count) > 0 ||
+    row.started_at != null ||
+    row.status === 'sending' ||
+    row.status === 'sent'
+  );
 }
 
 /**
@@ -595,9 +926,75 @@ async function publish(slugArg, options = {}) {
     }
   }
 
-  console.warn(
-    'Publishing sends (or re-sends) email to the active subscriber list for any email-configured post.',
-  );
+  // Publishing an already-published email post re-snapshots its recipients and
+  // emails the list again, so live posts are skipped (no slug) or need --resend.
+  let remotePosts;
+  try {
+    remotePosts = await db
+      .from('posts')
+      .select('id,slug,published_at,email_enabled,form_id,status,recipient_count,sent_count,started_at')
+      .eq('project_id', config.projectId)
+      .get();
+  } catch (err) {
+    handleAuthError(err);
+    console.error('Failed to fetch remote posts:', err.message);
+    process.exit(1);
+  }
+  const remoteBySlug = new Map((remotePosts || []).map((p) => [p.slug, p]));
+
+  let hadError = false;
+  let skippedLive = 0;
+  const toPublish = [];
+  for (const slug of targetSlugs) {
+    const row = remoteBySlug.get(slug);
+    if (!row) {
+      console.error(`"${slug}": publish failed (post not found (push it first with "micropage posts push"))`);
+      hadError = true;
+      continue;
+    }
+    const emailsList = Boolean(row.email_enabled && row.form_id);
+    // Unpublishing clears published_at but not the send record, so an emailed
+    // post taken down and republished would email its list again.
+    const emailed = emailsList && wasEmailed(row);
+    if (!slugArg && row.published_at) {
+      console.log(`"${slug}": already live, skipped${emailsList ? ' (no email re-sent)' : ''}`);
+      skippedLive += 1;
+      continue;
+    }
+    if (!slugArg && emailed) {
+      console.log(`"${slug}": already emailed, skipped (no email re-sent; use "micropage posts publish ${slug} --resend")`);
+      skippedLive += 1;
+      continue;
+    }
+    if (emailsList && (row.published_at || emailed) && !options.resend) {
+      console.error(
+        `"${slug}": already ${row.published_at ? 'published' : 'emailed'}; publishing it again re-sends the email to the list's current subscribers. Re-run with --resend to do that.`,
+      );
+      hadError = true;
+      continue;
+    }
+    toPublish.push(row);
+  }
+
+  const summarize = (publishedCount) => {
+    console.log('');
+    const skippedNote = skippedLive > 0 ? `, skipped ${skippedLive} already live or emailed` : '';
+    console.log(`Published ${publishedCount}/${toPublish.length} post(s)${skippedNote}.`);
+  };
+
+  if (toPublish.length === 0) {
+    summarize(0);
+    if (hadError) process.exit(1);
+    return;
+  }
+
+  if (toPublish.some((row) => row.email_enabled)) {
+    console.warn(
+      toPublish.some((row) => row.email_enabled && (row.published_at || wasEmailed(row)))
+        ? 'Publishing sends email to the active subscriber list for email-configured posts, including re-sends (--resend).'
+        : 'Publishing sends email to the active subscriber list for email-configured posts.',
+    );
+  }
 
   // Publishing a post makes the publisher auto-rebuild the live site so the
   // /content archive picks it up — no separate `micropage publish` needed.
@@ -625,11 +1022,10 @@ async function publish(slugArg, options = {}) {
     }
   }
 
-  let hadError = false;
   let publishedCount = 0;
   const responses = [];
 
-  for (const slug of targetSlugs) {
+  for (const { slug } of toPublish) {
     try {
       const result = await fn.invoke('publish-post', { project_id: config.projectId, slug });
       responses.push(result);
@@ -645,8 +1041,7 @@ async function publish(slugArg, options = {}) {
     }
   }
 
-  console.log('');
-  console.log(`Published ${publishedCount}/${targetSlugs.length} post(s).`);
+  summarize(publishedCount);
 
   if (publishedCount > 0) {
     const { buildId: rebuildBuildId, serverReported } = rebuildTarget(responses, activeBuildId);

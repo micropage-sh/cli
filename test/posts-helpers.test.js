@@ -118,6 +118,26 @@ describe('frontMatterFromPost', () => {
     assert.equal(parsed.data.email, true);
   });
 
+  test('email post writes list: from the form name map, so push can keep emailing it', () => {
+    const post = { title: 'Emailed', email_enabled: true, form_id: 'form-1', subject: 'Emailed' };
+    const fm = frontMatterFromPost(post, new Map([['form-1', 'Newsletter']]));
+    assert.equal(fm.email, true);
+    assert.equal(fm.list, 'Newsletter');
+    assert.equal(matter(matter.stringify('body', fm)).data.list, 'Newsletter');
+  });
+
+  test('list: is omitted when the form is unknown or email is off', () => {
+    assert.equal(frontMatterFromPost({ title: 'E', email_enabled: true, form_id: 'gone' }, new Map()).list, undefined);
+    const off = frontMatterFromPost({ title: 'E', email_enabled: false, form_id: 'form-1' }, new Map([['form-1', 'Newsletter']]));
+    assert.equal(off.list, undefined);
+    assert.equal(off.email, undefined);
+  });
+
+  test('visibility none round-trips', () => {
+    const fm = frontMatterFromPost({ title: 'Email only', web_visibility: 'none' });
+    assert.equal(matter(matter.stringify('body', fm)).data.visibility, 'none');
+  });
+
   test('hero, description, preview (from preheader) survive the round-trip', () => {
     const post = {
       title: 'Full Post',

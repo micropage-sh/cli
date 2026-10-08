@@ -251,15 +251,17 @@ subCmd
 const postsCmd = program.command('posts').description('Manage posts (dual-channel web + email content)');
 
 postsCmd
-  .command('push')
-  .description('Save draft/update local posts/*.md as post rows (does not publish or email); reports remote-only posts as drift')
-  .action((opts) => posts.push(opts));
+  .command('push [slugs...]')
+  .description('Save new and changed local posts/*.md (all, or only the given slugs) as post drafts or updates (does not publish or email). Unchanged posts are skipped; posts edited remotely since the last push or pull are not overwritten. Reports remote-only posts as drift')
+  .option('-f, --force', 'Push even when the remote post changed since the last sync (overwrites it), or recreate a post deleted or renamed remotely')
+  .option('-n, --dry-run', 'Show what would be created, updated or skipped without uploading or saving anything')
+  .action((slugs, opts) => posts.push(slugs, opts));
 
 postsCmd
-  .command('pull')
-  .description('Write remote posts to local posts/*.md files')
+  .command('pull [slugs...]')
+  .description('Write remote posts (all, or only the given slugs) to local posts/*.md files; files that already match are left alone')
   .option('-f, --force', 'Overwrite existing local files without prompting')
-  .action((opts) => posts.pull(opts));
+  .action((slugs, opts) => posts.pull(slugs, opts));
 
 postsCmd
   .command('list')
@@ -269,8 +271,9 @@ postsCmd
 
 postsCmd
   .command('publish [slug]')
-  .description('Publish one post by slug, or all local posts if omitted; (re)sends email for email-configured posts. Auto-triggers a site rebuild so the /content archive updates')
+  .description('Publish one post by slug, or every local post that is still a draft if omitted; sends email for email-configured posts. Auto-triggers a site rebuild so the /content archive updates')
   .option('-w, --watch', 'Stream build/deploy events until the auto-triggered site rebuild deploys')
+  .option('--resend', 'Allow publishing an email post that is already published or was emailed before, which emails its list again')
   .action((slug, opts) => posts.publish(slug, opts));
 
 postsCmd
