@@ -25,6 +25,9 @@ const {
   saveSyncState,
   findBaselineBySlug,
   recordSynced,
+  expectedRevision,
+  isRevisionConflict,
+  readBackMatches,
 } = require('../src/posts-sync');
 const { resolveHeroImage, resolveBodyImages } = require('../src/posts-assets');
 
@@ -293,6 +296,42 @@ describe('classify', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Server-side revision check helpers
+// ---------------------------------------------------------------------------
+
+describe('revision helpers', () => {
+  test('expectedRevision: the read revision, 0 for a new post, nothing with --force or no revision', () => {
+    assert.equal(expectedRevision({ remote: row({ revision: 4 }), force: false }), 4);
+    assert.equal(expectedRevision({ remote: null, force: false }), 0);
+    assert.equal(expectedRevision({ remote: row({ revision: 4 }), force: true }), undefined);
+    assert.equal(expectedRevision({ remote: null, force: true }), undefined);
+    assert.equal(expectedRevision({ remote: row(), force: false }), undefined);
+    assert.equal(expectedRevision({ remote: row({ revision: '4' }), force: false }), undefined);
+  });
+
+  test('isRevisionConflict only matches a 409 with the REVISION_CONFLICT code', () => {
+    const err = (status, data) => Object.assign(new Error('x'), { status, data });
+    assert.equal(isRevisionConflict(err(409, { code: 'REVISION_CONFLICT' })), true);
+    assert.equal(isRevisionConflict(err(409, { code: 'SLUG_TAKEN' })), false);
+    assert.equal(isRevisionConflict(err(409, { error: 'slug taken' })), false);
+    assert.equal(isRevisionConflict(err(409, null)), false);
+    assert.equal(isRevisionConflict(err(400, { code: 'REVISION_CONFLICT' })), false);
+    assert.equal(isRevisionConflict(null), false);
+  });
+
+  test('readBackMatches requires the same post, content and (when known) revision', () => {
+    const local = localModel(payload());
+    const pushed = { postId: 'p1', local, revision: 3 };
+    assert.equal(readBackMatches(row({ revision: 3 }), pushed), true);
+    assert.equal(readBackMatches(row({ revision: 4 }), pushed), false);
+    assert.equal(readBackMatches(row({ revision: 3, body_markdown: 'x' }), pushed), false);
+    assert.equal(readBackMatches(row({ id: 'p2', revision: 3 }), pushed), false);
+    assert.equal(readBackMatches(undefined, pushed), false);
+    assert.equal(readBackMatches(row(), { postId: 'p1', local }), true, 'no revision returned: content only');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Sync state file
 // ---------------------------------------------------------------------------
 
@@ -444,6 +483,17 @@ class ExitCalled extends Error {
   }
 }
 
+const REVISION_FIELDS = [
+  'title', 'slug', 'body_markdown', 'description', 'hero_image', 'web_visibility', 'form_id',
+  'email_enabled', 'subject', 'preheader', 'date_override',
+];
+
+// An edit made outside the CLI (web editor, MCP): bumps the revision like the server trigger.
+function remoteEdit(post, fields) {
+  Object.assign(post, fields);
+  post.revision = (post.revision || 1) + 1;
+}
+
 function makeFakeServer() {
   const server = {
     posts: [],
@@ -476,17 +526,29 @@ function makeFakeServer() {
     },
   };
 
-  // Mirrors upsert-post's stored shape closely enough for change detection.
+  // Mirrors upsert-post's stored shape closely enough for change detection,
+  // including the expected_revision check and the trigger's revision bump.
   server.fn = {
     async invoke(name, body) {
       server.invocations.push({ name, body });
       if (name === 'upsert-post') {
         let post = server.posts.find((p) => p.slug === body.slug);
         const action = post ? 'updated' : 'created';
+        const expected = body.expected_revision;
+        if (expected !== undefined && expected !== null) {
+          const current = post ? post.revision : null;
+          if ((post && current !== expected) || (!post && expected > 0)) {
+            const err = new Error('This post changed since it was read. Nothing was saved.');
+            err.status = 409;
+            err.data = { error: err.message, code: 'REVISION_CONFLICT', post_id: post ? post.id : null, current_revision: current };
+            throw err;
+          }
+        }
         if (!post) {
-          post = { id: `post-${server.nextId++}`, project_id: body.project_id, published_at: null, date_override: null };
+          post = { id: `post-${server.nextId++}`, project_id: body.project_id, published_at: null, date_override: null, revision: 1 };
           server.posts.push(post);
         }
+        const before = JSON.stringify(REVISION_FIELDS.map((f) => post[f] ?? null));
         Object.assign(post, {
           slug: body.slug,
           title: body.title,
@@ -507,7 +569,8 @@ function makeFakeServer() {
           post.date_override = iso;
           if (post.published_at) post.published_at = iso;
         }
-        return { post_id: post.id, action, published: post.published_at != null, rebuild_build_id: null };
+        if (action === 'updated' && JSON.stringify(REVISION_FIELDS.map((f) => post[f] ?? null)) !== before) post.revision += 1;
+        return { post_id: post.id, action, published: post.published_at != null, rebuild_build_id: null, revision: post.revision };
       }
       if (name === 'publish-post') {
         const post = server.posts.find((p) => p.slug === body.slug);
@@ -942,6 +1005,101 @@ describe('posts commands (stubbed API)', () => {
     const a = server.posts.find((p) => p.slug === 'a');
     assert.equal(state.posts[a.id].hash, remoteHash(a));
     assert.equal(Object.keys(state.posts).length, 1);
+  });
+
+  test('push sends the revision it read, 0 for a new post, and none with --force', async () => {
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
+    assert.equal(await run(() => posts.push([], {})), 0);
+    assert.equal(upserts()[0].body.expected_revision, 0);
+    assert.equal(server.posts[0].revision, 1);
+
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody edited\n');
+    assert.equal(await run(() => posts.push([], {})), 0);
+    assert.equal(upserts()[1].body.expected_revision, 1);
+    assert.equal(server.posts[0].revision, 2);
+
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody edited again\n');
+    assert.equal(await run(() => posts.push([], { force: true })), 0);
+    assert.equal('expected_revision' in upserts()[2].body, false);
+  });
+
+  test('a remote edit between the read and the save is refused by the server: CONFLICT, nothing written', async () => {
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
+    await run(() => posts.push([], {}));
+    const statePath = path.join(dir, SYNC_STATE_FILE);
+    const before = fs.readFileSync(statePath, 'utf8');
+    writePost('hello.md', '---\ntitle: Hello\n---\nLocal edit\n');
+
+    const upsert = server.fn.invoke;
+    supabase.fn.invoke = async (name, body) => {
+      if (name === 'upsert-post') remoteEdit(server.posts[0], { body_markdown: 'Edited in the editor meanwhile' });
+      return upsert(name, body);
+    };
+    assert.equal(await run(() => posts.push([], {})), 1);
+    supabase.fn.invoke = upsert;
+
+    assert.match(line('hello'), /CONFLICT, the post changed remotely during this push\. Not pushed\./);
+    assert.match(line('hello'), /micropage posts pull hello.*micropage posts push hello --force/);
+    assert.ok(out.includes('0 created, 0 updated, 0 unchanged, 0 skipped, 1 conflict, 0 failed.'));
+    assert.equal(server.posts[0].body_markdown, 'Edited in the editor meanwhile');
+    assert.equal(fs.readFileSync(statePath, 'utf8'), before, 'baseline untouched');
+
+    // Now both sides changed since the baseline: the client-side check catches it too.
+    assert.equal(await run(() => posts.push([], {})), 1);
+    assert.match(line('hello'), /CONFLICT, changed locally and remotely since last sync/);
+
+    assert.equal(await run(() => posts.push([], { force: true })), 0);
+    assert.equal(server.posts[0].body_markdown, 'Local edit\n');
+  });
+
+  test('a post created remotely with the same slug during the push is a conflict, not an overwrite', async () => {
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
+    const upsert = server.fn.invoke;
+    supabase.fn.invoke = async (name, body) => {
+      if (name === 'upsert-post' && server.posts.length === 0) {
+        server.posts.push({ ...row({ id: 'post-other', body_markdown: 'Someone else' }), project_id: 1, revision: 1 });
+      }
+      return upsert(name, body);
+    };
+    assert.equal(await run(() => posts.push([], {})), 1);
+    supabase.fn.invoke = upsert;
+    assert.match(line('hello'), /CONFLICT, the post changed remotely during this push/);
+    assert.equal(server.posts[0].body_markdown, 'Someone else');
+  });
+
+  test('a 409 without REVISION_CONFLICT is still reported as a slug clash', async () => {
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
+    supabase.fn.invoke = async (name) => {
+      if (name !== 'upsert-post') throw new Error(`unexpected function ${name}`);
+      const err = new Error('A post with this slug already exists');
+      err.status = 409;
+      err.data = { error: err.message, code: 'SLUG_TAKEN' };
+      throw err;
+    };
+    assert.equal(await run(() => posts.push([], {})), 1);
+    assert.ok(out.some((l) => /posts\/hello\.md: upsert failed \(slug already in use for another post\)/.test(l)));
+    assert.ok(out.includes('0 created, 0 updated, 0 unchanged, 0 skipped, 0 conflict, 1 failed.'));
+  });
+
+  test('a read-back whose revision moved past the save is not recorded as synced, even with the same content', async () => {
+    writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
+    const upsert = server.fn.invoke;
+    supabase.fn.invoke = async (name, body) => {
+      const result = await upsert(name, body);
+      // Edited and reverted elsewhere before the read-back: same content, newer revision.
+      if (name === 'upsert-post') server.posts[0].revision += 2;
+      return result;
+    };
+    assert.equal(await run(() => posts.push([], {})), 0);
+    supabase.fn.invoke = upsert;
+    const state = JSON.parse(fs.readFileSync(path.join(dir, SYNC_STATE_FILE), 'utf8'));
+    assert.notEqual(state.posts[server.posts[0].id].hash, remoteHash(server.posts[0]));
+
+    // The remote still matches the file, so the next push confirms it.
+    assert.equal(await run(() => posts.push([], {})), 0);
+    assert.match(line('hello'), /: unchanged$/);
+    const confirmed = JSON.parse(fs.readFileSync(path.join(dir, SYNC_STATE_FILE), 'utf8'));
+    assert.equal(confirmed.posts[server.posts[0].id].hash, remoteHash(server.posts[0]));
   });
 
   test('with slug arguments, a matching file that fails to parse reports the parse error', async () => {

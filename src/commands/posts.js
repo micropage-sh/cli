@@ -26,6 +26,9 @@ const {
   findBaselineBySlug,
   recordSynced,
   recordUnconfirmed,
+  expectedRevision,
+  isRevisionConflict,
+  readBackMatches,
 } = require('../posts-sync');
 
 const POSTS_DIR = 'posts';
@@ -224,7 +227,7 @@ function frontMatterFromPost(post, formNameById = new Map()) {
 // ---------------------------------------------------------------------------
 
 const POST_SYNC_COLUMNS =
-  'id,slug,title,description,body_markdown,web_visibility,hero_image,form_id,subject,preheader,published_at,date_override,email_enabled';
+  'id,slug,title,description,body_markdown,web_visibility,hero_image,form_id,subject,preheader,published_at,date_override,email_enabled,revision';
 
 const VISIBILITY_VALUES = ['listed', 'unlisted', 'none'];
 
@@ -532,14 +535,25 @@ async function push(slugArgs = [], options = {}) {
       }
     }
 
+    const expected = expectedRevision({ remote, force });
+    if (expected !== undefined) payload = { ...payload, expected_revision: expected };
+
     try {
       const result = await fn.invoke('upsert-post', payload);
       const where = result.published ? (result.rebuild_build_id ? 'live; site rebuild queued' : 'live') : 'draft';
       console.log(`${prefix}: ${detail}, saved (${where})`);
       counts[result.action === 'created' ? 'created' : 'updated'] += 1;
-      pushed.push({ postId: result.post_id, slug: post.slug, local: syncedLocal });
+      pushed.push({ postId: result.post_id, slug: post.slug, local: syncedLocal, revision: result.revision });
     } catch (err) {
       handleAuthError(err);
+      if (isRevisionConflict(err)) {
+        console.error(
+          `${prefix}: CONFLICT, the post changed remotely during this push. Not pushed. Run "micropage posts pull ${post.slug}", or overwrite with "micropage posts push ${post.slug} --force".`,
+        );
+        counts.conflict += 1;
+        hadError = true;
+        continue;
+      }
       const msg = err.status === 409 ? 'slug already in use for another post' : err.message;
       console.error(`${relName}: upsert failed (${msg})`);
       counts.failed += 1;
@@ -557,7 +571,8 @@ async function push(slugArgs = [], options = {}) {
   }
 
   // The baseline is the row as the server stored it, read back once for all
-  // pushed posts. A row that differs from what was pushed was edited in between.
+  // pushed posts. A row that differs from what was pushed, or whose revision
+  // moved past the one the save returned, was edited in between.
   if (pushed.length > 0) {
     let rows = [];
     try {
@@ -577,7 +592,7 @@ async function push(slugArgs = [], options = {}) {
     const rowsBySlug = new Map(rows.map((r) => [r.slug, r]));
     for (const p of pushed) {
       const row = rowsBySlug.get(p.slug);
-      if (row && String(row.id) === String(p.postId) && diffFields(p.local, row).length === 0) {
+      if (readBackMatches(row, p)) {
         recordSynced(state, row, p.local);
       } else {
         recordUnconfirmed(state, p.postId, p.slug, p.local);

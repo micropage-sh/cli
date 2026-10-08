@@ -9,6 +9,11 @@
  * keeps its own baseline in .micropage/posts-sync.json: per post id, a hash of
  * the remote row as last synced and per-field hashes of the local file as last
  * synced.
+ *
+ * That baseline only covers edits made before the push read the remote. An
+ * edit landing between that read and the save is caught by the server: push
+ * sends the revision it read as expected_revision, and upsert-post refuses the
+ * save if the post's revision has moved on.
  */
 
 const crypto = require('crypto');
@@ -267,6 +272,42 @@ function recordUnconfirmed(state, postId, slug, local, now = new Date()) {
   setEntry(state, postId, slug, UNCONFIRMED_HASH, local, now);
 }
 
+// ---------------------------------------------------------------------------
+// Server-side revision check
+// ---------------------------------------------------------------------------
+
+function isRevision(v) {
+  return Number.isInteger(v) && v >= 0;
+}
+
+/**
+ * expected_revision to send with a push: the revision the remote row had when
+ * it was read, 0 ("must not exist yet") for a new post, or undefined (no
+ * check) with --force or when the row carries no revision.
+ */
+function expectedRevision({ remote, force }) {
+  if (force) return undefined;
+  if (!remote) return 0;
+  return isRevision(remote.revision) ? remote.revision : undefined;
+}
+
+/** Whether an upsert-post error is the server refusing a save because the post changed since it was read. */
+function isRevisionConflict(err) {
+  return Boolean(err && err.status === 409 && err.data && err.data.code === 'REVISION_CONFLICT');
+}
+
+/**
+ * Whether a read-back row is exactly what a push saved: same post, same
+ * content, and (when the save reported one) the same revision, so an edit made
+ * after the save that happens to restore the same content isn't missed.
+ */
+function readBackMatches(row, pushed) {
+  if (!row || String(row.id) !== String(pushed.postId)) return false;
+  if (diffFields(pushed.local, row).length > 0) return false;
+  if (isRevision(pushed.revision) && row.revision !== pushed.revision) return false;
+  return true;
+}
+
 module.exports = {
   SYNC_STATE_FILE,
   SYNC_FIELDS,
@@ -283,4 +324,7 @@ module.exports = {
   findBaselineBySlug,
   recordSynced,
   recordUnconfirmed,
+  expectedRevision,
+  isRevisionConflict,
+  readBackMatches,
 };
