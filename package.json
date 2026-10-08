@@ -1,6 +1,6 @@
 {
   "name": "@micropage-sh/cli",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "description": "Micropage CLI: keep your .page files in git and publish static sites from the terminal",
   "main": "src/index.js",
   "bin": {
