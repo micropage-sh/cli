@@ -78,6 +78,16 @@ async function setActiveBuildId(projectId, buildId) {
   await db.from('projects').eq('id', projectId).update({ active_build_id: buildId });
 }
 
+// Remove a draft row created for a push that then failed, so a failed push
+// leaves no empty build behind. Best-effort: the push has already failed.
+async function discardBuild(buildId) {
+  try {
+    await fn.invoke('delete-build', { build_id: buildId });
+  } catch (err) {
+    console.error(`Could not remove the empty draft build (id ${buildId}): ${err.message}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // build list
 // ---------------------------------------------------------------------------
@@ -157,24 +167,9 @@ async function push(options = {}) {
     process.exit(1);
   }
 
-  // Parse content via parser API
-  console.log('Parsing content…');
-  let jsonContent;
-  try {
-    jsonContent = await parseContent(rawContent, config.projectId, config.buildId);
-  } catch (err) {
-    console.error('Parse failed:', err.message);
-    process.exit(1);
-  }
-
-  const llmsTxt = readLlmsTxtFromDir(cwd);
-  if (llmsTxt != null) {
-    jsonContent.site = jsonContent.site || {};
-    jsonContent.site.llms_txt = llmsTxt;
-    console.log(`Including llms.txt (${Buffer.byteLength(llmsTxt, 'utf8')} bytes).`);
-  }
-
-  // Decide whether to update existing draft or create new build
+  // Pick the target build before parsing so the parser stamps that build's own
+  // id into json_content: reuse a draft/failed build, otherwise create a new
+  // draft row now and fill in json_content after the parse.
   let existingBuild = null;
   if (config.buildId) {
     try {
@@ -187,9 +182,48 @@ async function push(options = {}) {
   const isDraft = existingBuild && (existingBuild.status === 'draft' || existingBuild.status === 'failed');
 
   let build;
+  if (isDraft) {
+    build = existingBuild;
+  } else {
+    try {
+      const results = await db.from('builds').insert({
+        project_id: config.projectId,
+        raw_content: rawContent,
+        status: 'draft',
+        parser_version: '2',
+      });
+      build = Array.isArray(results) ? results[0] : results;
+    } catch (err) {
+      handleAuthError(err);
+      console.error('Push failed:', err.message);
+      process.exit(1);
+    }
+    if (!build?.id) {
+      console.error('Push failed: the new build was not returned by the server.');
+      process.exit(1);
+    }
+  }
+
+  // Parse content via parser API
+  console.log('Parsing content…');
+  let jsonContent;
+  try {
+    jsonContent = await parseContent(rawContent, config.projectId, build.id);
+  } catch (err) {
+    console.error('Parse failed:', err.message);
+    if (!isDraft) await discardBuild(build.id);
+    process.exit(1);
+  }
+
+  const llmsTxt = readLlmsTxtFromDir(cwd);
+  if (llmsTxt != null) {
+    jsonContent.site = jsonContent.site || {};
+    jsonContent.site.llms_txt = llmsTxt;
+    console.log(`Including llms.txt (${Buffer.byteLength(llmsTxt, 'utf8')} bytes).`);
+  }
+
   try {
     if (isDraft) {
-      // Update existing draft
       const results = await db
         .from('builds')
         .eq('id', existingBuild.id)
@@ -197,19 +231,12 @@ async function push(options = {}) {
       build = Array.isArray(results) ? results[0] : existingBuild;
       console.log(`Updated build v${existingBuild.number}.`);
     } else {
-      // Create new draft build
-      const payload = {
-        project_id: config.projectId,
-        raw_content: rawContent,
-        json_content: jsonContent,
-        status: 'draft',
-        parser_version: '2',
-      };
-      const results = await db.from('builds').insert(payload);
-      build = Array.isArray(results) ? results[0] : results;
+      const results = await db.from('builds').eq('id', build.id).update({ json_content: jsonContent });
+      build = (Array.isArray(results) && results[0]) || build;
       console.log(`Created build v${build.number}.`);
     }
   } catch (err) {
+    if (!isDraft) await discardBuild(build.id);
     handleAuthError(err);
     console.error('Push failed:', err.message);
     process.exit(1);

@@ -610,48 +610,75 @@ async function uploadAssetsWithToken(accessToken, projectId, cwd, onProgress) {
 }
 
 /**
- * Parse `.page` source content via the build compiler and insert a new build row, using a
- * pre-obtained Supabase access token (e.g. from exchangeDeployTokenForAccessToken).
+ * Create a new draft build row, then parse `.page` source content via the build compiler
+ * with that build's id and store the result, using a pre-obtained Supabase access token
+ * (e.g. from exchangeDeployTokenForAccessToken). The row is created first so the parser
+ * stamps the build's own id into json_content; if parsing or the update fails, the empty
+ * row is removed (best-effort) and the error rethrown.
  * Returns the created build row (`{ id, number, status }`).
  */
 async function pushWithToken(accessToken, projectId, rawContent, buildCompilerUrl) {
   const { BUILD_COMPILER_URL } = require('./config');
   const url = buildCompilerUrl || BUILD_COMPILER_URL;
 
-  const parseRes = await fetch(`${url}/parse`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify({
-      text: rawContent,
-      project_id: projectId,
-      version: '2',
-    }),
-  });
-  if (!parseRes.ok) {
-    const t = await parseRes.text();
-    throw new Error(`Parser error: ${t}`);
-  }
-  const jsonContent = await parseRes.json();
-
-  const insertUrl = `${SUPABASE_URL}/rest/v1/builds`;
-  const build = await requestWithToken(
+  const inserted = await requestWithToken(
     'POST',
-    insertUrl,
+    `${SUPABASE_URL}/rest/v1/builds`,
     {
       project_id: projectId,
       raw_content: rawContent,
-      json_content: jsonContent,
       status: 'draft',
       parser_version: '2',
     },
     accessToken,
     { 'Prefer': 'return=representation' },
   );
+  const build = Array.isArray(inserted) ? inserted[0] : inserted;
+  if (!build?.id) {
+    throw new Error('The new build was not returned by the server.');
+  }
 
-  return Array.isArray(build) ? build[0] : build;
+  try {
+    const parseRes = await fetch(`${url}/parse`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        text: rawContent,
+        project_id: projectId,
+        build_id: build.id,
+        version: '2',
+      }),
+    });
+    if (!parseRes.ok) {
+      const t = await parseRes.text();
+      throw new Error(`Parser error: ${t}`);
+    }
+    const jsonContent = await parseRes.json();
+
+    const updated = await requestWithToken(
+      'PATCH',
+      `${SUPABASE_URL}/rest/v1/builds?id=eq.${encodeURIComponent(build.id)}`,
+      { json_content: jsonContent },
+      accessToken,
+      { 'Prefer': 'return=representation' },
+    );
+    return (Array.isArray(updated) && updated[0]) || build;
+  } catch (err) {
+    try {
+      await requestWithToken(
+        'POST',
+        `${SUPABASE_URL}/functions/v1/delete-build`,
+        { build_id: build.id },
+        accessToken,
+      );
+    } catch (cleanupErr) {
+      console.error(`Could not remove the empty draft build (id ${build.id}): ${cleanupErr.message}`);
+    }
+    throw err;
+  }
 }
 
 /**
