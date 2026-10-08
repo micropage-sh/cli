@@ -73,6 +73,7 @@ Posts live in the project's `posts/` folder as Markdown files with YAML front-ma
 ---
 title: Hello, world
 slug: hello
+date: 2026-07-07
 description: A short summary for the archive, meta description, and og tags.
 visibility: listed
 hero: ./hello.jpg
@@ -84,7 +85,7 @@ preview: The first post on this site.
 Body content goes here as standard Markdown.
 ```
 
-`title` is required. `slug` defaults to the filename minus a leading `YYYY-MM-DD-` date prefix. `visibility` is `listed` (default, appears in the site's `/content` index) or `unlisted`. `list` names a newsletter form and is required to email the post on publish. Local image references in the body are auto-uploaded and rewritten to hosted URLs on `push`.
+`title` is required. `slug` defaults to the filename minus a leading `YYYY-MM-DD-` date prefix. `date` is the post's public date: `YYYY-MM-DD` (midnight UTC) or a full ISO timestamp; it sets the published date of a live post, and a draft keeps it until its first publish. Omit it to use the publish time. Future dates are rejected (scheduling isn't supported); `posts pull` writes it back as the UTC day for published posts. `visibility` is `listed` (default, appears in the site's `/content` index) or `unlisted`. `list` names a newsletter form and is required to email the post on publish. Local image references in the body are auto-uploaded and rewritten to hosted URLs on `push`.
 
 ```bash
 # Save posts/hello.md as a draft

@@ -16,7 +16,13 @@ const os = require('os');
 const path = require('path');
 const matter = require('gray-matter');
 
-const { slugify, defaultSlugFromFilename, frontMatterFromPost, rebuildTarget } = require('../src/commands/posts');
+const {
+  slugify,
+  defaultSlugFromFilename,
+  frontMatterFromPost,
+  rebuildTarget,
+  normalizePostDate,
+} = require('../src/commands/posts');
 const { findCompanionImage } = require('../src/posts-assets');
 
 // ---------------------------------------------------------------------------
@@ -144,9 +150,94 @@ describe('frontMatterFromPost', () => {
     assert.equal(parsed.content.trim(), 'body content here');
   });
 
+  test('published post writes date as the UTC calendar day of published_at', () => {
+    const fm = frontMatterFromPost({ title: 'P', slug: 'p', published_at: '2026-07-07T23:30:00+00:00' });
+    assert.equal(fm.date, '2026-07-07');
+    const fm2 = frontMatterFromPost({ title: 'P', published_at: '2026-07-07T23:30:00-05:00' });
+    assert.equal(fm2.date, '2026-07-08');
+  });
+
+  test('draft (no published_at) omits date', () => {
+    const fm = frontMatterFromPost({ title: 'Draft', slug: 'draft', published_at: null });
+    assert.equal(fm.date, undefined);
+    assert.equal(matter(matter.stringify('body', fm)).data.date, undefined);
+  });
+
+  test('pulled date round-trips through push normalization unchanged', () => {
+    const fm = frontMatterFromPost({ title: 'P', slug: 'p', published_at: '2026-07-07T10:15:00.000Z' });
+    const parsed = matter(matter.stringify('body', fm));
+    assert.equal(normalizePostDate(parsed.data.date, new Date('2026-10-08T12:00:00Z')), '2026-07-07');
+  });
+
   test('missing title defaults to empty string, not undefined', () => {
     const fm = frontMatterFromPost({});
     assert.equal(fm.title, '');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizePostDate (front-matter `date` -> upsert-post payload)
+// ---------------------------------------------------------------------------
+
+describe('normalizePostDate', () => {
+  const now = new Date('2026-10-08T12:00:00.000Z');
+
+  test('absent values return null', () => {
+    assert.equal(normalizePostDate(undefined, now), null);
+    assert.equal(normalizePostDate(null, now), null);
+    assert.equal(normalizePostDate('', now), null);
+  });
+
+  test('unquoted YAML date (Date at midnight UTC) becomes YYYY-MM-DD', () => {
+    const fm = matter('---\ntitle: T\ndate: 2026-07-07\n---\nbody').data;
+    assert.ok(fm.date instanceof Date);
+    assert.equal(normalizePostDate(fm.date, now), '2026-07-07');
+    assert.equal(normalizePostDate(new Date('2026-07-07T00:00:00.000Z'), now), '2026-07-07');
+  });
+
+  test('Date with a time becomes a full ISO timestamp', () => {
+    assert.equal(normalizePostDate(new Date('2026-07-07T10:30:00Z'), now), '2026-07-07T10:30:00.000Z');
+    const fm = matter('---\ntitle: T\ndate: 2026-07-07 10:30:00\n---\nbody').data;
+    assert.equal(normalizePostDate(fm.date, now), '2026-07-07T10:30:00.000Z');
+  });
+
+  test('quoted date-only string is kept (trimmed)', () => {
+    const fm = matter("---\ntitle: T\ndate: '2026-07-07'\n---\nbody").data;
+    assert.equal(typeof fm.date, 'string');
+    assert.equal(normalizePostDate(fm.date, now), '2026-07-07');
+    assert.equal(normalizePostDate('  2026-07-07 ', now), '2026-07-07');
+  });
+
+  test('ISO timestamp strings are normalized to UTC', () => {
+    assert.equal(normalizePostDate('2026-07-07T10:00:00Z', now), '2026-07-07T10:00:00.000Z');
+    assert.equal(normalizePostDate('2026-07-07T10:00:00+02:00', now), '2026-07-07T08:00:00.000Z');
+    assert.equal(normalizePostDate('2026-07-07T10:00+0200', now), '2026-07-07T08:00:00.000Z');
+    assert.equal(normalizePostDate('2026-07-07 10:00:00', now), '2026-07-07T10:00:00.000Z', 'no offset = UTC');
+  });
+
+  test('invalid values throw an "invalid \"date\"" error', () => {
+    for (const bad of ['2026-02-30', '07/07/2026', 'yesterday', '2026-07-07T25:00:00Z', '2026-02-30T10:00:00Z', 2026, true]) {
+      assert.throws(() => normalizePostDate(bad, now), /invalid "date"/, `expected ${bad} to be rejected`);
+    }
+    assert.throws(() => normalizePostDate(new Date('nope'), now), /invalid "date"/);
+  });
+
+  test('future dates are rejected with a no-scheduling message', () => {
+    assert.throws(() => normalizePostDate('2026-10-10', now), /future; scheduling posts is not supported/);
+    assert.throws(() => normalizePostDate(new Date('2026-10-10T00:00:00Z'), now), /scheduling/);
+    assert.throws(() => normalizePostDate('2026-10-08T12:06:00Z', now), /scheduling/);
+  });
+
+  test('a date-only value more than 14h ahead is rejected even if it is "tomorrow" in UTC', () => {
+    const early = new Date('2026-10-08T09:00:00.000Z');
+    assert.throws(() => normalizePostDate('2026-10-09', early), /scheduling/);
+    assert.equal(normalizePostDate('2026-10-09', new Date('2026-10-08T10:00:00.000Z')), '2026-10-09');
+  });
+
+  test('today and tomorrow-in-UTC+14 are allowed for date-only; small clock skew allowed for timestamps', () => {
+    assert.equal(normalizePostDate('2026-10-08', now), '2026-10-08');
+    assert.equal(normalizePostDate('2026-10-09', now), '2026-10-09');
+    assert.equal(normalizePostDate('2026-10-08T12:04:00Z', now), '2026-10-08T12:04:00.000Z');
   });
 });
 

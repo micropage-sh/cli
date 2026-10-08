@@ -92,11 +92,84 @@ async function resolveFormId(projectId, listName) {
   return matches[0].id;
 }
 
+const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_DATETIME_RE =
+  /^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)\s*([Zz]|[+-]\d{2}(?::?\d{2})?)?$/;
+// Date-only values are midnight UTC server-side; allow "today" anywhere on
+// Earth (UTC+14) so a local-calendar date isn't rejected as future.
+const DATE_ONLY_FUTURE_SLACK_MS = 14 * 60 * 60 * 1000;
+const DATETIME_FUTURE_SLACK_MS = 5 * 60 * 1000;
+
+function utcDateString(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function isoOffset(raw) {
+  if (!raw || raw === 'z' || raw === 'Z') return 'Z';
+  const digits = raw.slice(1).replace(':', '');
+  return `${raw[0]}${digits.slice(0, 2)}:${digits.slice(2) || '00'}`;
+}
+
+function isMidnightUtc(d) {
+  return (
+    d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0 && d.getUTCMilliseconds() === 0
+  );
+}
+
+/**
+ * Normalize a front-matter `date` into what upsert-post accepts: `YYYY-MM-DD`
+ * or a full ISO timestamp. js-yaml turns unquoted dates into Date objects
+ * (UTC), quoted ones stay strings. Returns null when absent; throws on
+ * invalid or future values (scheduling isn't supported).
+ */
+function normalizePostDate(value, now = new Date()) {
+  if (value === undefined || value === null || value === '') return null;
+
+  let normalized;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new Error('invalid "date" (not a valid date)');
+    normalized = isMidnightUtc(value) ? utcDateString(value) : value.toISOString();
+  } else if (typeof value === 'string') {
+    const s = value.trim();
+    const dateOnly = DATE_ONLY_RE.exec(s);
+    if (dateOnly) {
+      const d = new Date(`${s}T00:00:00.000Z`);
+      if (Number.isNaN(d.getTime()) || utcDateString(d) !== s) {
+        throw new Error(`invalid "date" (${s}); use YYYY-MM-DD or an ISO timestamp`);
+      }
+      normalized = s;
+    } else {
+      const m = ISO_DATETIME_RE.exec(s);
+      // A timestamp without an offset is read as UTC, matching how YAML
+      // resolves unquoted timestamps.
+      const d = m ? new Date(`${m[1]}T${m[2]}${isoOffset(m[3])}`) : null;
+      if (!d || Number.isNaN(d.getTime()) || utcDateString(new Date(`${m[1]}T00:00:00.000Z`)) !== m[1]) {
+        throw new Error(`invalid "date" (${s}); use YYYY-MM-DD or an ISO timestamp`);
+      }
+      normalized = d.toISOString();
+    }
+  } else {
+    throw new Error(`invalid "date" (${String(value)}); use YYYY-MM-DD or an ISO timestamp`);
+  }
+
+  const isFuture = DATE_ONLY_RE.test(normalized)
+    ? Date.parse(`${normalized}T00:00:00Z`) > now.getTime() + DATE_ONLY_FUTURE_SLACK_MS
+    : new Date(normalized).getTime() > now.getTime() + DATETIME_FUTURE_SLACK_MS;
+  if (isFuture) {
+    throw new Error(`"date" ${normalized} is in the future; scheduling posts is not supported`);
+  }
+  return normalized;
+}
+
 function frontMatterFromPost(post) {
   const fmData = {
     title: post.title || '',
   };
   if (post.slug) fmData.slug = post.slug;
+  if (post.published_at) {
+    const published = new Date(post.published_at);
+    if (!Number.isNaN(published.getTime())) fmData.date = utcDateString(published);
+  }
   if (post.description) fmData.description = post.description;
   if (post.web_visibility && post.web_visibility !== 'listed') fmData.visibility = post.web_visibility;
   if (post.hero_image) fmData.hero = post.hero_image;
@@ -202,6 +275,15 @@ async function push(options = {}) {
       continue;
     }
 
+    let postDate;
+    try {
+      postDate = normalizePostDate(fm.date);
+    } catch (err) {
+      console.error(`${relName}: ${err.message}`);
+      hadError = true;
+      continue;
+    }
+
     const emailWanted = fm.email === true;
     let formId = null;
     if (emailWanted) {
@@ -270,6 +352,7 @@ async function push(options = {}) {
       subject: fm.subject || null,
       preheader: fm.preview || null,
     };
+    if (postDate) payload.date = postDate;
 
     try {
       const result = await fn.invoke('upsert-post', payload);
@@ -643,4 +726,5 @@ module.exports = {
   slugify,
   defaultSlugFromFilename,
   frontMatterFromPost,
+  normalizePostDate,
 };
