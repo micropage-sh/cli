@@ -169,6 +169,11 @@ function frontMatterFromPost(post) {
   if (post.published_at) {
     const published = new Date(post.published_at);
     if (!Number.isNaN(published.getTime())) fmData.date = utcDateString(published);
+  } else if (post.date_override) {
+    // A draft's held date must round-trip: push sends date: null for files without one,
+    // which clears it.
+    const held = new Date(post.date_override);
+    if (!Number.isNaN(held.getTime())) fmData.date = isMidnightUtc(held) ? utcDateString(held) : held.toISOString();
   }
   if (post.description) fmData.description = post.description;
   if (post.web_visibility && post.web_visibility !== 'listed') fmData.visibility = post.web_visibility;
@@ -352,7 +357,8 @@ async function push(options = {}) {
       subject: fm.subject || null,
       preheader: fm.preview || null,
     };
-    if (postDate) payload.date = postDate;
+    // An explicit null tells the server the file has no date:, so a held draft date is cleared.
+    payload.date = postDate || null;
 
     try {
       const result = await fn.invoke('upsert-post', payload);
@@ -402,7 +408,7 @@ async function pull(options = {}) {
     remotePosts = await db
       .from('posts')
       .select(
-        'id,slug,title,description,body_markdown,web_visibility,email_enabled,status,hero_image,published_at,created_at',
+        'id,slug,title,description,body_markdown,web_visibility,email_enabled,status,hero_image,published_at,date_override,created_at',
       )
       .eq('project_id', config.projectId)
       .order('created_at', 'desc')

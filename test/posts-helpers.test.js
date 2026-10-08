@@ -163,6 +163,14 @@ describe('frontMatterFromPost', () => {
     assert.equal(matter(matter.stringify('body', fm)).data.date, undefined);
   });
 
+  test('draft with a held date writes it, so pull then push keeps it', () => {
+    const day = frontMatterFromPost({ title: 'D', slug: 'd', published_at: null, date_override: '2026-03-15T00:00:00.000Z' });
+    assert.equal(day.date, '2026-03-15');
+    const timed = frontMatterFromPost({ title: 'D', slug: 'd', published_at: null, date_override: '2026-03-15T09:30:00.000Z' });
+    assert.equal(timed.date, '2026-03-15T09:30:00.000Z');
+    assert.equal(normalizePostDate(matter(matter.stringify('body', timed)).data.date), '2026-03-15T09:30:00.000Z');
+  });
+
   test('pulled date round-trips through push normalization unchanged', () => {
     const fm = frontMatterFromPost({ title: 'P', slug: 'p', published_at: '2026-07-07T10:15:00.000Z' });
     const parsed = matter(matter.stringify('body', fm));
