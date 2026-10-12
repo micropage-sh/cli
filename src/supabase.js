@@ -320,6 +320,13 @@ const TERMINAL_DEPLOY_EVENTS = new Set([
   'archive.failed',
 ]);
 
+// Terminal for the build it is recorded on; the payload may hand off to a newer
+// build of the same project (superseded_by_build_id), which the stream follows.
+const SUPERSEDED_DEPLOY_EVENT = 'build.superseded';
+
+// Bounds how far a chain of hand-offs can move the watch, whatever the payloads say.
+const MAX_SUPERSEDE_HOPS = 10;
+
 /**
  * Collapse arbitrary text to a single bounded line. Keeps a Rails/HTML error
  * body or backtrace that leaks into an event payload from flooding the deploy
@@ -331,10 +338,25 @@ function truncateForConsole(str, max = 200) {
 }
 
 /**
- * Human-readable line for deploy stream (falls back to event_type + JSON payload).
- * @param {{ event_type?: string, payload?: Record<string, unknown> }} ev
+ * Build id a `build.superseded` event hands off to, or null when the payload
+ * carries none (or anything that is not a positive integer).
  */
-function formatDeployEventForConsole(ev) {
+function supersededTarget(ev) {
+  const payload = ev && ev.payload && typeof ev.payload === 'object' ? ev.payload : null;
+  const raw = payload ? payload.superseded_by_build_id : null;
+  let n = null;
+  if (typeof raw === 'number') n = raw;
+  else if (typeof raw === 'string' && /^\d{1,16}$/.test(raw)) n = Number(raw);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Human-readable line for deploy stream (falls back to event_type + JSON payload).
+ * @param {{ event_type?: string, build_id?: number, payload?: Record<string, unknown> }} ev
+ * @param {{ buildId?: number|string, following?: boolean }} [context] build the stream is
+ *   watching (older edge functions omit build_id) and whether a supersede hand-off is followed
+ */
+function formatDeployEventForConsole(ev, context = {}) {
   const eventType = ev.event_type || '';
   const payload = ev.payload && typeof ev.payload === 'object' ? ev.payload : null;
   // Steps other than active come from retired Cloudflare Pages deploys; old events
@@ -342,6 +364,20 @@ function formatDeployEventForConsole(ev) {
   if (eventType === 'deployment.domain_wiring' && payload && payload.step === 'active') {
     const host = typeof payload.hostname === 'string' ? payload.hostname : '';
     return `${eventType}: live — ${host ? `https://${host}` : ''}`;
+  }
+  if (eventType === SUPERSEDED_DEPLOY_EVENT) {
+    const from = ev.build_id != null ? ev.build_id : context.buildId;
+    const label = from != null ? `build ${truncateForConsole(from, 32)}` : 'build';
+    const to = supersededTarget(ev);
+    if (to == null) {
+      return `${eventType}: ${label} superseded; nothing further to deploy`;
+    }
+    const reason =
+      payload && typeof payload.reason === 'string' && payload.reason.trim() !== ''
+        ? ` (${truncateForConsole(payload.reason, 64)})`
+        : '';
+    const tail = context.following === false ? 'not following it' : 'following it';
+    return `${eventType}: ${label} superseded by build ${to}${reason}; ${tail}`;
   }
   const extra = ev.payload ? ` ${truncateForConsole(JSON.stringify(ev.payload))}` : '';
   return `${eventType}${extra}`;
@@ -377,22 +413,16 @@ async function getMaxDeployEventIdForProject(projectId) {
   return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * Stream build/deploy/archive events until a terminal event or the connection closes.
- * @param {string} bearerToken
- * @param {number|string} projectId
- * @param {number|string} buildId
- * @param {{ afterId?: number }} [options] afterId skips older rows (avoids instant exit on past deployment.completed)
- * @returns {Promise<{ terminalEvent: object | null }>}
- */
-async function streamDeployEventsUntilDone(bearerToken, projectId, buildId, options = {}) {
+async function openDeployEventStream(bearerToken, projectId, buildId, afterId, followSuperseded) {
   const qs = new URLSearchParams({
     projectId: String(projectId),
     buildId: String(buildId),
   });
-  const aid = options.afterId;
-  if (aid != null && Number(aid) > 0) {
-    qs.set('afterId', String(aid));
+  if (afterId != null && Number(afterId) > 0) {
+    qs.set('afterId', String(afterId));
+  }
+  if (!followSuperseded) {
+    qs.set('follow', '0');
   }
   const res = await fetch(
     `${SUPABASE_URL}/functions/v1/deploy-events-stream?${qs.toString()}`,
@@ -406,65 +436,162 @@ async function streamDeployEventsUntilDone(bearerToken, projectId, buildId, opti
 
   if (!res.ok) {
     const t = await res.text();
-    throw new Error(t || `HTTP ${res.status}`);
+    const err = new Error(t || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
+  return res;
+}
 
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
-  let terminalEvent = null;
+/**
+ * Stream build/deploy/archive events until a terminal event or the connection closes.
+ *
+ * A `build.superseded` event with a hand-off build Y moves the watch to Y
+ * (cursor = the superseded event's id), at most MAX_SUPERSEDE_HOPS times. Edge
+ * functions that include `build_id` on events follow Y on the same connection;
+ * older ones keep polling the superseded build, so the client reconnects to Y
+ * itself. It also reconnects when the connection closes right after a hand-off.
+ * Y is only followed when it is a positive integer different from the watched
+ * build; the edge function rejects a Y outside the authorized project.
+ *
+ * With `followSuperseded: false` (archive watchers, which wait on X's own
+ * archive.* events) superseded is printed and skipped: no hand-off, no
+ * reconnect, and the edge function is asked not to follow either (`follow=0`).
+ *
+ * @param {string} bearerToken
+ * @param {number|string} projectId
+ * @param {number|string} buildId
+ * @param {{ afterId?: number, followSuperseded?: boolean }} [options] afterId skips older rows
+ *   (avoids instant exit on past deployment.completed); followSuperseded defaults to true
+ * @returns {Promise<{
+ *   terminalEvent: object | null,
+ *   buildId: number|string,
+ *   superseded: Array<{ build_id: number|string, superseded_by_build_id: number, reason: string|null }>,
+ * }>} buildId is the build the watch ended on (differs from the argument after a hand-off)
+ */
+async function streamDeployEventsUntilDone(bearerToken, projectId, buildId, options = {}) {
+  const followSuperseded = options.followSuperseded !== false;
+  let currentBuildId = buildId;
+  let afterId = options.afterId;
+  const superseded = [];
+  let lastHandoff = null;
 
-  try {
-    outer: while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let sep;
-      while ((sep = buf.indexOf('\n\n')) >= 0) {
-        const block = buf.slice(0, sep);
-        buf = buf.slice(sep + 2);
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data: ')) continue;
-          const json = line.slice(6).trim();
-          try {
-            const ev = JSON.parse(json);
-            if (ev.error) {
-              console.error('stream:', ev.error);
-              throw new Error(String(ev.error));
-            }
-            if (ev.event_type) {
+  while (true) {
+    let res;
+    try {
+      res = await openDeployEventStream(bearerToken, projectId, currentBuildId, afterId, followSuperseded);
+    } catch (e) {
+      // After a hand-off, "not found" means Y is not a build of this project:
+      // stop where the watch was rather than failing the whole command.
+      if (lastHandoff && e.status === 404) {
+        console.log(`[stream] build ${currentBuildId} not found for this project; stopped following`);
+        return { terminalEvent: lastHandoff.event, buildId: lastHandoff.from, superseded };
+      }
+      throw e;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let terminalEvent = null;
+    let reconnect = false;
+    // True while the last event on this connection is an accepted hand-off.
+    let handoffPending = false;
+
+    try {
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep;
+        while ((sep = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          for (const line of block.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            const json = line.slice(6).trim();
+            try {
+              const ev = JSON.parse(json);
+              if (ev.error) {
+                console.error('stream:', ev.error);
+                throw new Error(String(ev.error));
+              }
+              if (!ev.event_type) continue;
               const ts = ev.created_at || '';
-              console.log(`[${ts}] ${formatDeployEventForConsole(ev)}`);
+              handoffPending = false;
+
+              if (String(ev.event_type) === SUPERSEDED_DEPLOY_EVENT && !followSuperseded) {
+                console.log(
+                  `[${ts}] ${formatDeployEventForConsole(ev, { buildId: currentBuildId, following: false })}`,
+                );
+                continue;
+              }
+
+              if (String(ev.event_type) === SUPERSEDED_DEPLOY_EVENT) {
+                const to = supersededTarget(ev);
+                const evId = Number(ev.id);
+                const follow =
+                  to != null &&
+                  to !== Number(currentBuildId) &&
+                  superseded.length < MAX_SUPERSEDE_HOPS &&
+                  Number.isSafeInteger(evId) &&
+                  evId > 0;
+                console.log(
+                  `[${ts}] ${formatDeployEventForConsole(ev, { buildId: currentBuildId, following: follow })}`,
+                );
+                if (!follow) {
+                  terminalEvent = ev;
+                  break outer;
+                }
+                const payload = ev.payload && typeof ev.payload === 'object' ? ev.payload : {};
+                superseded.push({
+                  build_id: currentBuildId,
+                  superseded_by_build_id: to,
+                  reason: typeof payload.reason === 'string' ? payload.reason : null,
+                });
+                lastHandoff = { event: ev, from: currentBuildId };
+                currentBuildId = to;
+                afterId = evId;
+                if (Object.prototype.hasOwnProperty.call(ev, 'build_id')) {
+                  handoffPending = true;
+                  continue;
+                }
+                reconnect = true;
+                break outer;
+              }
+
+              console.log(`[${ts}] ${formatDeployEventForConsole(ev, { buildId: currentBuildId })}`);
               if (TERMINAL_DEPLOY_EVENTS.has(String(ev.event_type))) {
                 terminalEvent = ev;
                 break outer;
               }
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) {
-              // A non-JSON data line usually means an HTML/error body leaked into
-              // the stream — summarize it instead of dumping the whole page.
-              if (/^\s*</.test(json)) {
-                console.log('[stream] skipped non-JSON response chunk');
+            } catch (e) {
+              if (e instanceof SyntaxError) {
+                // A non-JSON data line usually means an HTML/error body leaked into
+                // the stream — summarize it instead of dumping the whole page.
+                if (/^\s*</.test(json)) {
+                  console.log('[stream] skipped non-JSON response chunk');
+                } else {
+                  console.log(truncateForConsole(json));
+                }
               } else {
-                console.log(truncateForConsole(json));
+                throw e;
               }
-            } else {
-              throw e;
             }
           }
         }
       }
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // ignore
+      }
     }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // ignore
-    }
-  }
 
-  return { terminalEvent };
+    if (reconnect || (handoffPending && !terminalEvent)) continue;
+    return { terminalEvent, buildId: currentBuildId, superseded };
+  }
 }
 
 function hashFile(filePath) {
@@ -751,6 +878,9 @@ module.exports = {
   getMaxDeployEventIdForBuild,
   getMaxDeployEventIdForProject,
   streamDeployEventsUntilDone,
+  formatDeployEventForConsole,
+  supersededTarget,
+  MAX_SUPERSEDE_HOPS,
   exchangeDeployTokenForAccessToken,
   pushWithToken,
   invokePublishBuild,

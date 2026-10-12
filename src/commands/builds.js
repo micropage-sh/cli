@@ -462,7 +462,7 @@ async function download(versionArg, options = {}) {
           accessToken,
           projectIdForArchive,
           build.id,
-          { afterId: archiveEventCursor },
+          { afterId: archiveEventCursor, followSuperseded: false },
         );
         if (terminalEvent?.event_type === 'archive.failed') {
           const msg =
