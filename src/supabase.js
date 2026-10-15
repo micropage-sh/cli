@@ -884,6 +884,7 @@ module.exports = {
   exchangeDeployTokenForAccessToken,
   pushWithToken,
   invokePublishBuild,
+  uploadAssetWithToken,
   uploadAssetsWithToken,
   hashFile,
 };
