@@ -63,7 +63,7 @@ micropage copy-link
 
 ### Project domains
 
-When you create a project without `-d`, the API assigns `projects.domain` as the initial host for your site (for example `my-site.micropage.sh`). You can optionally attach a custom domain (such as `www.example.com`) in the web editor; when present, the CLI shows that custom domain as the site URL (otherwise the default host).
+When you create a project without `-d`, the API assigns `projects.domain` as the slug of your site, which is served at `<slug>.micropage.live` (for example `my-site.micropage.live`). You can optionally attach a custom domain (such as `www.example.com`) in the web editor; when present, the CLI shows that custom domain as the site URL (otherwise the default host). Set `MICROPAGE_BASE_DOMAIN` to point the CLI at another platform domain.
 
 ### Authoring posts
 
@@ -122,7 +122,7 @@ See [`micropage posts`](#posts) below for the full command set.
 |---|---|
 | `micropage projects list [--json]` | List your projects |
 | `micropage projects show [id] [--json]` | Show project + latest build details |
-| `micropage projects create <name> [-d domain]` | Create a project and init local folder. Omit `-d` to let the API assign `{slugified-name}-{6 hex}` (unique `<slug>.micropage.sh` label, max 58 chars). Use `-d` only to override the slug. |
+| `micropage projects create <name> [-d domain]` | Create a project and init local folder. Omit `-d` to let the API assign `{slugified-name}-{6 hex}` (unique `<slug>.micropage.live` label, max 58 chars). Use `-d` only to override the slug. |
 | `micropage projects fetch <uuid\|domain>` | Fetch an existing project and init local folder (includes storage → `./assets` sync) |
 | `micropage projects pull` | Pull latest build raw content → `landing.page`, then sync `./assets` with project storage (1:1) |
 | `micropage projects delete [-y]` | Delete project (remote + local `.micropage/`) |
@@ -234,7 +234,7 @@ If the project folder contains a root-level `llms.txt`, its contents are publish
 Each project folder has a `.micropage/project.json` file that stores:
 - `projectId` — the Supabase project ID
 - `buildId` — the ID of the last draft/deployed build (auto-updated by push/pull)
-- `domain` — the project slug; the site lives at `<domain>.micropage.sh`
+- `domain` — the project slug; the site lives at `<domain>.micropage.live`
 - `name` — the project name
 
 Add `.micropage/` to your `.gitignore` if you share the content folder.

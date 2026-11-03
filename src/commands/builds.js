@@ -15,7 +15,7 @@ const {
 } = require('../supabase');
 const { getProjectConfig, setProjectConfig } = require('../auth');
 const { readPageFilesFromDir, readLlmsTxtFromDir } = require('../parser');
-const { BUILD_COMPILER_URL } = require('../config');
+const { BUILD_COMPILER_URL, projectUrl } = require('../config');
 const { formatTable, formatDate } = require('../utils');
 
 // ---------------------------------------------------------------------------
@@ -296,10 +296,8 @@ async function publish(options = {}) {
       projectId: updatedConfig.projectId,
     });
     console.log('Publish triggered. The build will be deployed in a few moments.');
-    const viewUrl = customDomain
-      ? `https://${customDomain}`
-      : `https://${updatedConfig.domain}.micropage.sh`;
-    console.log(`View at: ${viewUrl}`);
+    const viewUrl = projectUrl(updatedConfig.domain, customDomain);
+    if (viewUrl) console.log(`View at: ${viewUrl}`);
     if (options.watch) {
       console.log('');
       console.log('Build / deploy events:');

@@ -19,7 +19,9 @@ const BUILD_COMPILER_URL =
   process.env.MICROPAGE_PARSER_URL ||
   'https://build-compiler.micropage.sh';
 
-const BASE_DOMAIN = process.env.MICROPAGE_BASE_DOMAIN || 'micropage.sh';
+// Platform sites live at `<slug>.micropage.live`; micropage.sh keeps the apex,
+// app, docs and the custom-domain CNAME target. Override for a local stack.
+const BASE_DOMAIN = process.env.MICROPAGE_BASE_DOMAIN || 'micropage.live';
 
 // Live URL for a project. Prefers the customer's custom domain (a full FQDN
 // like `www.example.com`) when set; falls back to `https://<slug>.<BASE_DOMAIN>`.

@@ -65,7 +65,7 @@ projectCmd
   .description('Create a new project and init local folder')
   .option(
     '-d, --domain <domain>',
-    'Choose the project slug, which sets its address <domain>.micropage.sh (default: server generates name-slug + 6 hex, max 58 chars)',
+    'Choose the project slug, which sets its address <domain>.micropage.live (default: server generates name-slug + 6 hex, max 58 chars)',
   )
   .action((name, opts) => projects.create(name, opts));
 
