@@ -444,103 +444,176 @@ async function download(versionArg, options = {}) {
   const projectIdForArchive = build.project_id != null ? build.project_id : config.projectId;
   const archiveEventCursor = await getMaxDeployEventIdForBuild(build.id);
 
-  // Invoke async archive creation; publisher job uploads zip and sets archive_url; events stream progress.
-  try {
-    const data = await fn.invoke('request-build-archive', {
-      buildId: String(build.id),
-      projectId: String(projectIdForArchive),
-    });
-    if (data?.already_ready && data.archive_url) {
-      build.archive_url = data.archive_url;
-    } else if (data?.queued || data?.pending) {
-      console.log('Archive generation queued — streaming progress (zip may take several minutes)…');
-      try {
-        const accessToken = await getValidAccessToken();
-        const { terminalEvent } = await streamDeployEventsUntilDone(
-          accessToken,
-          projectIdForArchive,
-          build.id,
-          { afterId: archiveEventCursor, followSuperseded: false },
-        );
-        if (terminalEvent?.event_type === 'archive.failed') {
-          const msg =
-            (terminalEvent.payload && (terminalEvent.payload.error || terminalEvent.payload.message)) ||
-            'Archive generation failed';
-          console.error(msg);
-          process.exit(1);
-        }
-        if (terminalEvent?.event_type === 'archive.completed' && terminalEvent.payload?.archive_url) {
-          build.archive_url = terminalEvent.payload.archive_url;
-        }
-      } catch (streamErr) {
-        handleAuthError(streamErr);
-        console.error('Event stream failed:', streamErr.message);
+  const requestArchive = async () => {
+    try {
+      return await fn.invoke('request-build-archive', {
+        buildId: String(build.id),
+        projectId: String(projectIdForArchive),
+      });
+    } catch (err) {
+      handleAuthError(err);
+      console.error('Failed to invoke request-build-archive:', err.message);
+      process.exit(1);
+    }
+  };
+
+  // Stored archive URLs (builds table, archive.completed payload) can be expired;
+  // only a fresh request-build-archive response carries a link that is valid now.
+  let downloadLink = null;
+  let archiveReady = false;
+  const data = await requestArchive();
+  if (data?.already_ready && data.archive_url) {
+    downloadLink = data.archive_url;
+  } else if (data?.queued || data?.pending) {
+    console.log('Archive generation queued — streaming progress (zip may take several minutes)…');
+    try {
+      const accessToken = await getValidAccessToken();
+      const { terminalEvent } = await streamDeployEventsUntilDone(
+        accessToken,
+        projectIdForArchive,
+        build.id,
+        { afterId: archiveEventCursor, followSuperseded: false },
+      );
+      if (terminalEvent?.event_type === 'archive.failed') {
+        const msg =
+          (terminalEvent.payload && (terminalEvent.payload.error || terminalEvent.payload.message)) ||
+          'Archive generation failed';
+        console.error(msg);
         process.exit(1);
       }
-    } else {
-      console.warn('Archive response did not include ready/queued/pending; polling builds table.');
-    }
-  } catch (err) {
-    handleAuthError(err);
-    console.error('Failed to invoke request-build-archive:', err.message);
-    process.exit(1);
-  }
-
-  // Poll builds table until archive_url is populated or timeout.
-  const started = Date.now();
-  const timeoutMs = 2 * 60 * 1000; // 2 minutes
-  const pollIntervalMs = 5000;
-  while (!build.archive_url && Date.now() - started < timeoutMs) {
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-    const rows = await db
-      .from('builds')
-      .select('id,number,status,archive_url')
-      .eq('id', build.id)
-      .get();
-    const refreshed = rows?.[0];
-    if (!refreshed) {
-      console.error('Build disappeared while waiting for archive.');
+      if (terminalEvent?.event_type === 'archive.completed') {
+        archiveReady = true;
+      }
+    } catch (streamErr) {
+      handleAuthError(streamErr);
+      console.error('Event stream failed:', streamErr.message);
       process.exit(1);
     }
-    if (refreshed.status !== 'deployed') {
-      console.error(`Build changed status to ${refreshed.status} while waiting for archive; aborting.`);
-      process.exit(1);
-    }
-    build = refreshed;
+  } else {
+    console.warn('Archive response did not include ready/queued/pending; polling builds table.');
   }
 
-  if (!build.archive_url) {
-    console.error('Timed out waiting for archive to become available.');
-    process.exit(1);
+  if (!downloadLink) {
+    // Poll builds table until archive_url is populated or timeout.
+    const started = Date.now();
+    const timeoutMs = 2 * 60 * 1000; // 2 minutes
+    const pollIntervalMs = 5000;
+    while (!archiveReady && Date.now() - started < timeoutMs) {
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+      const rows = await db
+        .from('builds')
+        .select('id,number,status,archive_url')
+        .eq('id', build.id)
+        .get();
+      const refreshed = rows?.[0];
+      if (!refreshed) {
+        console.error('Build disappeared while waiting for archive.');
+        process.exit(1);
+      }
+      if (refreshed.status !== 'deployed') {
+        console.error(`Build changed status to ${refreshed.status} while waiting for archive; aborting.`);
+        process.exit(1);
+      }
+      build = refreshed;
+      if (refreshed.archive_url) archiveReady = true;
+    }
+
+    if (!archiveReady) {
+      console.error('Timed out waiting for archive to become available.');
+      process.exit(1);
+    }
+
+    const ready = await requestArchive();
+    if (!(ready?.already_ready && ready.archive_url)) {
+      console.error('Archive is ready but no download link was returned. Run the command again.');
+      process.exit(1);
+    }
+    downloadLink = ready.archive_url;
   }
 
   const outFile = options.output || path.join(cwd, `build-v${build.number}.zip`);
   console.log(`Downloading build v${build.number} → ${outFile}`);
 
-  await downloadUrl(build.archive_url, outFile);
+  try {
+    await downloadUrl(downloadLink, outFile);
+  } catch (err) {
+    console.error(`${err.message}. Run the command again; if it keeps failing, contact support.`);
+    process.exit(1);
+  }
   console.log('Download complete.');
 }
 
-function downloadUrl(url, dest) {
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECTS = 5;
+
+/**
+ * Streams `url` to `dest`. The file is only created once a 200 arrives, and is
+ * removed if the transfer fails, so a failed download never leaves a stub file.
+ */
+function downloadUrl(url, dest, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let file = null;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        fs.rm(dest, { force: true }, () => reject(err));
+      };
+      if (file) {
+        file.destroy();
+        file.once('close', cleanup);
+        if (file.closed) cleanup();
+      } else {
+        reject(err);
+      }
+    };
+
     const proto = url.startsWith('https') ? https : http;
-    const file = fs.createWriteStream(dest);
-    proto.get(url, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        file.close();
-        fs.unlinkSync(dest);
-        downloadUrl(res.headers.location, dest).then(resolve).catch(reject);
+    const req = proto.get(url, (res) => {
+      if (REDIRECT_STATUSES.has(res.statusCode) && res.headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) {
+          fail(new Error('Download failed: too many redirects'));
+          return;
+        }
+        settled = true;
+        const next = new URL(res.headers.location, url).toString();
+        downloadUrl(next, dest, redirectsLeft - 1).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
-        reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+        res.resume();
+        fail(new Error(`Download failed: HTTP ${res.statusCode}`));
         return;
       }
+      file = fs.createWriteStream(dest);
+      file.on('error', (err) => {
+        res.destroy();
+        fail(new Error(`Download failed: ${err.message}`));
+      });
+      res.on('error', (err) => fail(new Error(`Download failed: ${err.message}`)));
+      res.on('aborted', () => fail(new Error('Download failed: connection closed early')));
+      res.on('end', () => {
+        if (!res.complete) fail(new Error('Download failed: connection closed early'));
+      });
+      file.on('finish', () => {
+        if (settled) return;
+        if (!res.complete) {
+          fail(new Error('Download failed: connection closed early'));
+          return;
+        }
+        settled = true;
+        file.close(() => resolve());
+      });
       res.pipe(file);
-      file.on('finish', () => file.close(resolve));
-      file.on('error', reject);
-    }).on('error', reject);
+    });
+    req.on('error', (err) => fail(new Error(`Download failed: ${err.message}`)));
   });
 }
 
-module.exports = { list, push, publish, redeploy, download };
+module.exports = { list, push, publish, redeploy, download, downloadUrl };
