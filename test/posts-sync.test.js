@@ -681,6 +681,32 @@ describe('posts commands (stubbed API)', () => {
     assert.match(line('launch'), /: unchanged$/);
   });
 
+  test('push prints upsert-post diagnostics at the post file line', async () => {
+    writePost('hello.md', '---\r\ntitle: Hello\r\ndate: 2026-01-01\r\n---\r\nIntro\r\n\r\n![](x.png)\r\n');
+    writePost('old.md', '---\ntitle: Old\n---\n![](y.png)\n');
+    const invoke = server.fn.invoke;
+    supabase.fn.invoke = async (name, body) => {
+      const result = await invoke(name, body);
+      if (name !== 'upsert-post') return result;
+      // old.md stands in for an older server that sends no diagnostics.
+      if (body.slug === 'old') return result;
+      const bodyLine = body.body_markdown.split(/\r\n|\r|\n/).findIndex((l) => l.startsWith('![]')) + 1;
+      return {
+        ...result,
+        diagnostics: [
+          { line: bodyLine, column: 1, severity: 'warning', code: 'missing-alt', message: 'This image has no alt text.' },
+          'garbage',
+        ],
+      };
+    };
+
+    assert.equal(await run(() => posts.push([], {})), 0);
+    assert.ok(out.includes(`${path.join('posts', 'hello.md')}:7:1: warning: This image has no alt text. [missing-alt]`), out.join('\n'));
+    assert.ok(out.includes('Post check reported 1 warning.'));
+    assert.equal(out.filter((l) => l.includes('Post check')).length, 1);
+    assert.ok(out.includes('2 created, 0 updated, 0 unchanged, 0 skipped, 0 conflict, 0 failed.'));
+  });
+
   test('local edit is pushed with the changed fields named', async () => {
     writePost('hello.md', '---\ntitle: Hello\n---\nBody\n');
     await run(() => posts.push([], {}));

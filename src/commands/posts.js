@@ -15,6 +15,7 @@ const {
 const { getProjectConfig } = require('../auth');
 const { formatTable, formatDate } = require('../utils');
 const { fetchRemoteFileIndex, resolveHeroImage, resolveBodyImages } = require('../posts-assets');
+const { reportPostDiagnostics } = require('../diagnostics');
 const {
   SYNC_STATE_FILE,
   localModel,
@@ -235,6 +236,20 @@ function slugForFile(filePath, fm) {
   return fm.slug ? slugify(String(fm.slug)) : slugify(defaultSlugFromFilename(filePath));
 }
 
+/**
+ * Number of file lines before the post body: front-matter, its delimiters and
+ * whatever gray-matter strips around them. gray-matter's content is always a
+ * suffix of the file (after a stripped BOM), so the prefix is what it removed.
+ * Line endings count like CommonMark's (CRLF, CR or LF).
+ */
+function bodyLineOffset(raw, content) {
+  const text = String(raw ?? '');
+  const body = String(content ?? '');
+  if (!text.endsWith(body)) return 0;
+  const prefix = text.slice(0, text.length - body.length);
+  return (prefix.match(/\r\n|\r|\n/g) || []).length;
+}
+
 /** Parse a local post file far enough to know its slug. Throws with a user-facing message. */
 function readLocalPost(filePath) {
   let raw;
@@ -250,7 +265,8 @@ function readLocalPost(filePath) {
     throw new Error(`invalid front-matter (${err.message})`);
   }
   const fm = parsed.data || {};
-  return { fm, content: parsed.content || '', slug: slugForFile(filePath, fm) };
+  const content = parsed.content || '';
+  return { fm, content, slug: slugForFile(filePath, fm), bodyLineOffset: bodyLineOffset(raw, content) };
 }
 
 /**
@@ -542,6 +558,7 @@ async function push(slugArgs = [], options = {}) {
       const result = await fn.invoke('upsert-post', payload);
       const where = result.published ? (result.rebuild_build_id ? 'live; site rebuild queued' : 'live') : 'draft';
       console.log(`${prefix}: ${detail}, saved (${where})`);
+      reportPostDiagnostics(result.diagnostics, { file: relName, lineOffset: post.bodyLineOffset });
       counts[result.action === 'created' ? 'created' : 'updated'] += 1;
       pushed.push({ postId: result.post_id, slug: post.slug, local: syncedLocal, revision: result.revision });
     } catch (err) {
@@ -1143,4 +1160,6 @@ module.exports = {
   defaultSlugFromFilename,
   frontMatterFromPost,
   normalizePostDate,
+  bodyLineOffset,
+  readLocalPost,
 };

@@ -65,7 +65,7 @@ function plural(n, word) {
 }
 
 /** One-line count summary, or '' when there is nothing to report. */
-function summarize(diagnostics) {
+function summarize(diagnostics, source = 'Parser') {
   if (!Array.isArray(diagnostics) || diagnostics.length === 0) return '';
   const counts = { error: 0, warning: 0, hint: 0 };
   let truncated = false;
@@ -81,7 +81,7 @@ function summarize(diagnostics) {
   if (counts.warning) parts.push(plural(counts.warning, 'warning'));
   if (counts.hint) parts.push(plural(counts.hint, 'hint'));
   if (parts.length === 0 && !truncated) return '';
-  return `Parser reported ${parts.join(', ') || 'diagnostics'}${truncated ? ' (more not shown)' : ''}.`;
+  return `${source} reported ${parts.join(', ') || 'diagnostics'}${truncated ? ' (more not shown)' : ''}.`;
 }
 
 /** Diagnostics that fail --strict: errors and warnings; hints never fail. */
@@ -123,6 +123,39 @@ function reportDiagnostics(diagnostics, map, { strict = false, log = (...a) => c
   return strict ? strictFailures(diagnostics) : [];
 }
 
+// The server caps at 50 plus one truncation note; a misbehaving server must
+// not flood the terminal either.
+const MAX_POST_DIAGNOSTICS = 51;
+
+/**
+ * Print upsert-post diagnostics for one saved post to stderr. Lines arrive
+ * relative to body_markdown; `lineOffset` is the number of file lines before
+ * the body, so `file` lines match what an editor shows. A response without
+ * `diagnostics` (an older server) prints nothing. Never throws.
+ */
+function reportPostDiagnostics(diagnostics, { file, lineOffset = 0, log = (...a) => console.error(...a) } = {}) {
+  if (!Array.isArray(diagnostics)) return;
+  try {
+    const list = diagnostics
+      .filter((d) => d && typeof d === 'object' && !Array.isArray(d))
+      .slice(0, MAX_POST_DIAGNOSTICS);
+    if (list.length === 0) return;
+    const offset = Number.isInteger(lineOffset) && lineOffset > 0 ? lineOffset : 0;
+    const map = { files: [{ name: clean(file), startLine: 1, lineCount: Infinity, leadingLines: offset }] };
+    for (const d of list) {
+      const entry = { ...d, message: String(d.message ?? '').slice(0, 300) };
+      const text = formatDiagnostic(entry, map);
+      const hasLine = Number.isInteger(d.line) && d.line > 0;
+      // A whole-post note names the post, not "micropage".
+      log(hasLine ? text : text.replace(/^micropage: /, `${clean(file)}: `));
+    }
+    const summary = summarize(list, 'Post check');
+    if (summary) log(summary);
+  } catch (err) {
+    log(`micropage: note: could not print post diagnostics (${err.message}).`);
+  }
+}
+
 class StrictDiagnosticsError extends Error {
   constructor(failures) {
     super(strictFailureMessage(failures));
@@ -140,5 +173,6 @@ module.exports = {
   strictFailures,
   strictFailureMessage,
   reportDiagnostics,
+  reportPostDiagnostics,
   StrictDiagnosticsError,
 };

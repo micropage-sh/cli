@@ -87,4 +87,16 @@ describe('posts push uploads local images', () => {
     assert.deepEqual(uploads, ['diagram.png']);
     assert.equal(r.markdown, 'See ![d](https://files.micropage.sh/projects/1/id-diagram.png).');
   });
+
+  test('body image rewriting never changes the line count', async () => {
+    const { cwd, postFilePath, fileIndex } = setup();
+    const url = 'https://files.micropage.sh/projects/1/id-diagram.png';
+    const body = 'One ![d](diagram.png)\n![two\nlines](diagram.png "Title")\n![e](\n  diagram.png\n)\r\n![f](diagram.png\r\n"T")\nend';
+    const r = await resolveBodyImages({ accessToken: 't', projectId: 1, postFilePath, cwd, body, fileIndex });
+    const lines = (s) => s.split(/\r\n|\r|\n/).length;
+    assert.equal(lines(r.markdown), lines(body));
+    assert.equal(r.markdown.split(url).length - 1, 4);
+    assert.ok(!r.markdown.includes('](diagram.png'));
+    assert.match(r.markdown, /^One !\[d\]\(https:[^)]+\)\n/);
+  });
 });

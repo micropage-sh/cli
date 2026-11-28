@@ -225,7 +225,15 @@ async function resolveBodyImages({ accessToken, projectId, postFilePath, cwd, bo
   MD_IMAGE_RE.lastIndex = 0;
   const rewritten = body.replace(MD_IMAGE_RE, (full, alt, ref) => {
     const resolved = mapping[ref];
-    return resolved ? `![${alt}](${resolved})` : full;
+    if (!resolved) return full;
+    // A reference split over lines is rewritten in place: upsert-post reports
+    // diagnostics by body line, which must stay the file's line minus the
+    // front-matter.
+    if (/[\r\n]/.test(full.slice(alt.length + 4))) {
+      const at = full.indexOf(ref, alt.length + 4);
+      return full.slice(0, at) + resolved + full.slice(at + ref.length);
+    }
+    return `![${alt}](${resolved})`;
   });
 
   return { markdown: rewritten, uploaded, mapping, unresolved, pendingUploads };
