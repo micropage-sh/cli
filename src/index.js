@@ -14,6 +14,7 @@ const forms = require('./commands/forms');
 const files = require('./commands/files');
 const links = require('./commands/links');
 const posts = require('./commands/posts');
+const checks = require('./commands/check');
 
 const program = new Command();
 
@@ -159,6 +160,31 @@ program
   .option('-w, --watch', 'Stream build/deploy events after triggering publish')
   .option('--strict', 'Fail when the parser reports errors or warnings; hints never fail')
   .action((opts) => builds.publish(opts));
+
+// check and fix exit 1 only for problems found in the pages; anything
+// unexpected means the command could not run, which is 2.
+async function exitCodeOf(run) {
+  try {
+    process.exitCode = await run();
+  } catch (err) {
+    console.error(`micropage: ${err?.message || err}`);
+    process.exitCode = 2;
+  }
+}
+
+program
+  .command('check [dir]')
+  .description('Report problems in the local .page files without saving a build (exit 1 on errors, 2 if the check could not run)')
+  .option('--strict', 'Also fail on warnings; hints never fail')
+  .option('--json', 'Output diagnostics as JSON')
+  .option('--diff', 'Print suggested fixes as a patch on stdout (diagnostics go to stderr)')
+  .action((dir, opts) => exitCodeOf(() => checks.check(dir, opts)));
+
+program
+  .command('fix [dir]')
+  .description('Check the local .page files and apply suggested fixes, asking about each one')
+  .option('-y, --yes', 'Apply every suggested fix without asking')
+  .action((dir, opts) => exitCodeOf(() => checks.fix(dir, opts)));
 
 // ---------------------------------------------------------------------------
 // Links

@@ -885,6 +885,7 @@ module.exports = {
   handleAuthError,
   attachPlanRequired,
   getValidAccessToken,
+  refreshSession,
   getMaxDeployEventIdForBuild,
   getMaxDeployEventIdForProject,
   streamDeployEventsUntilDone,

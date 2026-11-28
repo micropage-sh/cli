@@ -1,6 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 
+/**
+ * True when `bytes` is UTF-8 text that decodes and re-encodes unchanged (a
+ * BOM is fine). Invalid sequences would come back as U+FFFD, and NUL bytes
+ * mean UTF-16 or binary; rewriting either from the decoded string would
+ * damage lines nobody asked to change.
+ */
+function isUtf8Text(bytes) {
+  if (bytes.includes(0)) return false;
+  return Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes);
+}
+
 function countNewlines(s) {
   let n = 0;
   for (let i = s.indexOf('\n'); i !== -1; i = s.indexOf('\n', i + 1)) n++;
@@ -21,9 +32,12 @@ function countNewlines(s) {
  * `{ name, startLine, lineCount, leadingLines }`: `startLine` is the 1-based
  * line in `text` where the file's trimmed content starts, `lineCount` how many
  * lines it spans there, and `leadingLines` how many lines `trim()` removed from
- * the top of the file.
+ * the top of the file. With `keepRaw`, each entry also carries `raw`, the
+ * file's untrimmed text, `bytes`, the file as read, and `utf8`, whether those
+ * bytes survive decoding (see isUtf8Text), so fixes are only ever written
+ * back to files that round-trip byte for byte.
  */
-function readPageFilesWithMap(dir) {
+function readPageFilesWithMap(dir, { keepRaw = false } = {}) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   const primary = path.join(dir, 'landing.page');
   const others = [];
@@ -43,13 +57,16 @@ function readPageFilesWithMap(dir) {
   const files = [];
   let startLine = 1;
   for (const { file, keepEmpty } of sources) {
-    const raw = fs.readFileSync(file, 'utf8');
+    const bytes = fs.readFileSync(file);
+    const raw = bytes.toString('utf8');
     const content = raw.trim();
     if (!content && !keepEmpty) continue;
     const lineCount = countNewlines(content) + 1;
     const leadingLines = content ? countNewlines(raw.slice(0, raw.length - raw.trimStart().length)) : 0;
     parts.push(content);
-    files.push({ name: path.basename(file), startLine, lineCount, leadingLines });
+    const entry = { name: path.basename(file), startLine, lineCount, leadingLines };
+    if (keepRaw) Object.assign(entry, { raw, bytes, utf8: isUtf8Text(bytes) });
+    files.push(entry);
     // +1 for the blank separator line the join inserts.
     startLine += lineCount + 1;
   }
@@ -120,6 +137,7 @@ function listAssetsFromDir(dir) {
 module.exports = {
   readPageFilesFromDir,
   readPageFilesWithMap,
+  isUtf8Text,
   mapLine,
   writePageFile,
   listAssetsFromDir,

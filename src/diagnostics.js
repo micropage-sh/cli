@@ -36,7 +36,7 @@ function clean(value) {
 function location(line, column, map) {
   const col = Number.isInteger(column) && column > 0 ? column : 1;
   const mapped = mapLine(map, line);
-  if (mapped) return `${mapped.file}:${mapped.line}:${col}`;
+  if (mapped) return `${clean(mapped.file)}:${mapped.line}:${col}`;
   return `<merged>:${line}:${col}`;
 }
 
@@ -156,6 +156,59 @@ function reportPostDiagnostics(diagnostics, { file, lineOffset = 0, log = (...a)
   }
 }
 
+// The server caps at 50 plus one truncation note.
+const MAX_DIAGNOSTICS = 51;
+
+const isLine = (v) => Number.isInteger(v) && v >= 1;
+
+/**
+ * Diagnostics with merged-text lines translated to file lines, in the shape
+ * the MCP server returns: `{file?, line?, column?, severity, code, message,
+ * fix?: {file, line, replace}}`. Malformed entries are dropped and a fix that
+ * maps to no file line is left out, since it could land in the wrong file.
+ */
+function mapDiagnostics(diagnostics, map) {
+  const out = [];
+  for (const d of Array.isArray(diagnostics) ? diagnostics : []) {
+    if (out.length >= MAX_DIAGNOSTICS) break;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) continue;
+    if (typeof d.code !== 'string' || typeof d.message !== 'string') continue;
+    const m = {};
+    if (isLine(d.line)) {
+      const at = mapLine(map, d.line);
+      if (at) m.file = at.file;
+      m.line = at ? at.line : d.line;
+      if (isLine(d.column)) m.column = d.column;
+    }
+    m.severity = normalizeSeverity(d.severity);
+    m.code = d.code.slice(0, 100);
+    m.message = d.message.slice(0, 300);
+    const fix = d.fix;
+    if (fix && typeof fix === 'object' && !Array.isArray(fix)
+      && isLine(fix.line) && typeof fix.replace === 'string'
+      && fix.replace.length <= 500 && !fix.replace.includes('\n')) {
+      const at = mapLine(map, fix.line);
+      if (at) m.fix = { file: at.file, line: at.line, replace: fix.replace };
+    }
+    out.push(m);
+  }
+  return out;
+}
+
+/** Severity counts, leaving out the "more not shown" note. */
+function countDiagnostics(diagnostics) {
+  const counts = { error: 0, warning: 0, hint: 0 };
+  for (const d of Array.isArray(diagnostics) ? diagnostics : []) {
+    if (!d || d.code === 'too-many-diagnostics') continue;
+    counts[normalizeSeverity(d.severity)]++;
+  }
+  return counts;
+}
+
+function isTruncated(diagnostics) {
+  return Array.isArray(diagnostics) && diagnostics.some((d) => d && d.code === 'too-many-diagnostics');
+}
+
 class StrictDiagnosticsError extends Error {
   constructor(failures) {
     super(strictFailureMessage(failures));
@@ -174,5 +227,10 @@ module.exports = {
   strictFailureMessage,
   reportDiagnostics,
   reportPostDiagnostics,
+  mapDiagnostics,
+  countDiagnostics,
+  isTruncated,
+  clean,
+  MAX_DIAGNOSTICS,
   StrictDiagnosticsError,
 };

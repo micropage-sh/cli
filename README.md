@@ -138,11 +138,19 @@ When you create a new project, the CLI also scaffolds:
 
 | Command | Description |
 |---|---|
+| `micropage check [dir] [--strict] [--json] [--diff]` | Report problems in the local `.page` files without saving a build, uploading assets or changing anything |
+| `micropage fix [dir] [-y]` | Check, then apply suggested fixes to the local `.page` files, asking about each one |
 | `micropage push` | Merge local `.page` files and save as a draft build |
 | `micropage publish` | Push then deploy the site live |
 | `micropage builds list [--json]` | List builds for the current project |
 | `micropage builds redeploy [version]` | Re-publish an older build as a new deploy |
 | `micropage builds download [version] [-o file]` | Download a deployed build archive as a `.zip` file |
+
+**Checking and fixing pages:**
+
+- `check` prints one line per problem, like `landing.page:14:1: warning: Image has no alt text [missing-alt]`, then a summary, or `No problems found.` It exits 0 when there are no errors, 1 when there are errors (with `--strict`, warnings too; hints never fail), and 2 when the check could not run (not logged in, no network, no `.page` files).
+- `check --json` prints `{diagnostics, counts, truncated}`. `check --diff` prints only a patch of the suggested fixes on stdout, so `micropage check --diff > fixes.patch` then `git apply fixes.patch` works; the problems go to stderr.
+- `fix` shows each fix as an old line and a new line and asks `Apply this fix? [y,n,a,q,?]`: `y` apply, `n` skip, `a` apply this and the rest, `q` stop and keep what you accepted. It needs a terminal; use `--yes` to apply every fix without asking. A file edited while you were answering is left alone. After writing, it checks once more and prints what is left.
 
 **Notes:**
 
