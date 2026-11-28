@@ -537,15 +537,21 @@ async function deploy(projectUuid, deployToken, options = {}) {
     const internalProjectId = exchanged.project_id;
 
     let buildId = options.build;
+    if (options.strict && buildId !== undefined && buildId !== null && String(buildId).trim() !== '') {
+      console.error('micropage: note: --strict has no effect with --build; that build is already parsed.');
+    }
 
     if (buildId === undefined || buildId === null || String(buildId).trim() === '') {
       // No --build supplied: read .page files from CWD and create a new build.
       const cwd = process.cwd();
-      const { readPageFilesFromDir } = require('../parser');
+      const { readPageFilesWithMap } = require('../parser');
+      const { reportDiagnostics } = require('../diagnostics');
 
       let rawContent;
+      let lineMap;
       try {
-        rawContent = readPageFilesFromDir(cwd);
+        lineMap = readPageFilesWithMap(cwd);
+        rawContent = lineMap.text;
       } catch (err) {
         console.error('Failed to read .page files:', err.message);
         process.exit(1);
@@ -573,8 +579,15 @@ async function deploy(projectUuid, deployToken, options = {}) {
       console.log('Parsing content and creating build…');
       let build;
       try {
-        build = await pushWithToken(accessToken, internalProjectId, rawContent);
+        build = await pushWithToken(accessToken, internalProjectId, rawContent, undefined, {
+          strict: !!options.strict,
+          onDiagnostics: (diagnostics) => reportDiagnostics(diagnostics, lineMap, { strict: !!options.strict }),
+        });
       } catch (err) {
+        if (err.code === 'STRICT_DIAGNOSTICS') {
+          console.error(err.message);
+          process.exit(1);
+        }
         console.error('Build creation failed:', err.message);
         process.exit(1);
       }

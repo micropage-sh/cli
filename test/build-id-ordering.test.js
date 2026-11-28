@@ -79,6 +79,7 @@ describe('build push parses with the target build id', () => {
   let parseBodies;
   let invocations;
   let parseStatus;
+  let parseResponse;
   let failDeleteBuild;
   let buildsCmd;
   const originalCwd = process.cwd();
@@ -95,6 +96,7 @@ describe('build push parses with the target build id', () => {
     parseBodies = [];
     invocations = [];
     parseStatus = 200;
+    parseResponse = { pages: [] };
     failDeleteBuild = false;
     out = [];
 
@@ -119,7 +121,7 @@ describe('build push parses with the target build id', () => {
       if (String(url).endsWith('/parse')) {
         parseBodies.push(JSON.parse(options.body));
         if (parseStatus !== 200) return new Response('boom', { status: parseStatus });
-        return jsonResponse(200, { pages: [] });
+        return jsonResponse(200, parseResponse);
       }
       throw new Error(`unexpected fetch ${url}`);
     };
@@ -263,12 +265,95 @@ describe('build push parses with the target build id', () => {
     assert.equal(await run(() => buildsCmd.push()), 1);
     assert.deepEqual(invocations, []);
   });
+
+  const missingAlt = {
+    line: 4,
+    column: 1,
+    severity: 'warning',
+    code: 'missing-alt',
+    message: 'Image has no alt text; add one before "<-" or use alt: ""',
+  };
+
+  test('asks for diagnostics, prints them mapped to files, stores json_content without them', async () => {
+    writeConfig({ projectId: 3 });
+    parseResponse = { pages: [], diagnostics: [missingAlt] };
+
+    assert.equal(await run(() => buildsCmd.push()), 0);
+    assert.equal(parseBodies[0].diagnostics, true);
+    assert.deepEqual(builds[0].json_content, { pages: [] });
+    assert.equal(Object.prototype.hasOwnProperty.call(builds[0].json_content, 'diagnostics'), false);
+    assert.ok(out.includes(`site.page:4:1: warning: ${missingAlt.message} [missing-alt]`));
+    assert.ok(out.includes('Parser reported 1 warning.'));
+  });
+
+  test('old parser without a diagnostics key still pushes, silently', async () => {
+    writeConfig({ projectId: 3 });
+    parseResponse = { pages: [] };
+
+    assert.equal(await run(() => buildsCmd.push()), 0);
+    assert.deepEqual(builds[0].json_content, { pages: [] });
+    assert.ok(!out.some((l) => /diagnostics unavailable/.test(l)));
+  });
+
+  test('--strict with a warning exits 1 before storing json_content and removes the new draft', async () => {
+    builds.push({ id: 7, number: 1, status: 'deployed' });
+    writeConfig({ projectId: 3, buildId: 7 });
+    parseResponse = { pages: [], diagnostics: [missingAlt] };
+
+    assert.equal(await run(() => buildsCmd.push({ strict: true })), 1);
+    assert.equal(fakeDb.ops.filter((o) => o.op === 'update').length, 0, 'no json_content PATCH');
+    const newBuild = builds.find((b) => b.id !== 7);
+    assert.deepEqual(invocations, [{ name: 'delete-build', body: { build_id: newBuild.id } }]);
+    assert.ok(out.includes('Build not saved: --strict found 1 warning.'));
+    assert.equal(readConfig().buildId, 7, 'config still points at the previous build');
+  });
+
+  test('--strict with a warning leaves an existing draft untouched', async () => {
+    builds.push({ id: 42, number: 4, status: 'draft' });
+    writeConfig({ projectId: 3, buildId: 42 });
+    parseResponse = { pages: [], diagnostics: [{ ...missingAlt, severity: 'error', code: 'dropped-block' }] };
+
+    assert.equal(await run(() => buildsCmd.push({ strict: true })), 1);
+    assert.equal(fakeDb.ops.filter((o) => o.op === 'update').length, 0);
+    assert.deepEqual(invocations, []);
+  });
+
+  test('--strict ignores hints, including unknown severities', async () => {
+    writeConfig({ projectId: 3 });
+    parseResponse = {
+      pages: [],
+      diagnostics: [
+        { line: 1, severity: 'hint', code: 'unknown-tag', message: 'm', fix: { line: 1, replace: 'x' } },
+        { line: 2, severity: 'novel', code: 'future-code', message: 'm' },
+      ],
+    };
+
+    assert.equal(await run(() => buildsCmd.push({ strict: true })), 0);
+    assert.deepEqual(builds[0].json_content, { pages: [] });
+  });
+
+  test('--strict against an old parser notes it and still pushes', async () => {
+    writeConfig({ projectId: 3 });
+
+    assert.equal(await run(() => buildsCmd.push({ strict: true })), 0);
+    assert.deepEqual(builds[0].json_content, { pages: [] });
+    assert.ok(out.some((l) => /diagnostics unavailable/.test(l)));
+  });
+
+  test('publish --strict stops before publishing', async () => {
+    writeConfig({ projectId: 3 });
+    parseResponse = { pages: [], diagnostics: [missingAlt] };
+
+    assert.equal(await run(() => buildsCmd.publish({ strict: true })), 1);
+    assert.ok(!invocations.some((i) => i.name === 'publish-build'));
+  });
 });
 
 describe('pushWithToken creates the build before parsing', () => {
   const saved = {};
   let calls;
   let parseStatus;
+  let parseResponse;
   let insertBody;
   let patchStatus;
   let deleteStatus;
@@ -281,6 +366,7 @@ describe('pushWithToken creates the build before parsing', () => {
   beforeEach(() => {
     calls = [];
     parseStatus = 200;
+    parseResponse = { pages: [] };
     insertBody = [{ id: 900, number: 12, status: 'draft' }];
     patchStatus = 200;
     deleteStatus = 200;
@@ -296,7 +382,7 @@ describe('pushWithToken creates the build before parsing', () => {
       }
       if (u.endsWith('/parse')) {
         if (parseStatus !== 200) return new Response('bad markup', { status: parseStatus });
-        return jsonResponse(200, { pages: [] });
+        return jsonResponse(200, parseResponse);
       }
       if (u.includes('/rest/v1/builds?id=eq.900') && options.method === 'PATCH') {
         if (patchStatus !== 200) return jsonResponse(patchStatus, { message: 'update rejected' });
@@ -367,5 +453,138 @@ describe('pushWithToken creates the build before parsing', () => {
       /new build was not returned/,
     );
     assert.equal(calls.length, 1);
+  });
+
+  test('asks for diagnostics, hands them to onDiagnostics and stores json_content without them', async () => {
+    const diag = [{ line: 1, severity: 'warning', code: 'missing-alt', message: 'm' }];
+    parseResponse = { pages: [], diagnostics: diag };
+    let seen;
+    await supabase.pushWithToken('jwt', 3, 'raw', 'https://compiler.test', {
+      onDiagnostics: (d) => { seen = d; },
+    });
+    assert.equal(calls[1].body.diagnostics, true);
+    assert.deepEqual(seen, diag);
+    assert.deepEqual(calls[2].body, { json_content: { pages: [] } });
+  });
+
+  test('old parser without the key: onDiagnostics gets null and the build is stored', async () => {
+    let seen = 'unset';
+    await supabase.pushWithToken('jwt', 3, 'raw', 'https://compiler.test', {
+      strict: true,
+      onDiagnostics: (d) => { seen = d; },
+    });
+    assert.equal(seen, null);
+    assert.deepEqual(calls[2].body, { json_content: { pages: [] } });
+  });
+
+  test('strict with a warning throws before the PATCH and removes the new build', async () => {
+    parseResponse = { pages: [], diagnostics: [{ line: 1, severity: 'warning', code: 'missing-alt', message: 'm' }] };
+    await assert.rejects(
+      supabase.pushWithToken('jwt', 3, 'raw', 'https://compiler.test', { strict: true }),
+      (err) => err.code === 'STRICT_DIAGNOSTICS' && /--strict found 1 warning/.test(err.message),
+    );
+    assert.equal(calls.filter((c) => c.method === 'PATCH').length, 0);
+    const del = calls.find((c) => c.url.endsWith('/functions/v1/delete-build'));
+    assert.deepEqual(del.body, { build_id: 900 });
+  });
+
+  test('strict with only hints stores the build', async () => {
+    parseResponse = { pages: [], diagnostics: [{ line: 1, severity: 'hint', code: 'unknown-tag', message: 'm' }] };
+    await supabase.pushWithToken('jwt', 3, 'raw', 'https://compiler.test', { strict: true });
+    assert.equal(calls.filter((c) => c.method === 'PATCH').length, 1);
+  });
+});
+
+describe('projects deploy reports diagnostics and honours --strict', () => {
+  const saved = {};
+  let dir;
+  let out;
+  let calls;
+  let published;
+  let parseResponse;
+  let projects;
+  const originalCwd = process.cwd();
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'micropage-cli-deploy-'));
+    fs.writeFileSync(path.join(dir, 'landing.page'), '\n\n[Home -> /]\n/// hero\nimg: <- x.png\n');
+    process.chdir(dir);
+    out = [];
+    calls = [];
+    published = [];
+    parseResponse = {
+      pages: [],
+      diagnostics: [{ line: 3, column: 1, severity: 'warning', code: 'missing-alt', message: 'Image has no alt text' }],
+    };
+
+    for (const k of ['exchangeDeployTokenForAccessToken', 'uploadAssetsWithToken', 'getMaxDeployEventIdForBuild', 'invokePublishBuild']) {
+      saved[k] = supabase[k];
+    }
+    saved.fetch = global.fetch;
+    saved.exit = process.exit;
+    saved.log = console.log;
+    saved.error = console.error;
+
+    supabase.exchangeDeployTokenForAccessToken = async () => ({ access_token: 'jwt', project_id: 3 });
+    supabase.uploadAssetsWithToken = async () => 0;
+    supabase.getMaxDeployEventIdForBuild = async () => 0;
+    supabase.invokePublishBuild = async (...a) => { published.push(a); };
+    global.fetch = async (url, options) => {
+      const u = String(url);
+      calls.push({ url: u, method: options.method, body: options.body ? JSON.parse(options.body) : null });
+      if (u.endsWith('/rest/v1/builds') && options.method === 'POST') {
+        return jsonResponse(201, [{ id: 900, number: 12, status: 'draft' }]);
+      }
+      if (u.endsWith('/parse')) return jsonResponse(200, parseResponse);
+      if (u.includes('/rest/v1/builds?id=eq.900') && options.method === 'PATCH') {
+        return jsonResponse(200, [{ id: 900, number: 12, status: 'draft' }]);
+      }
+      if (u.endsWith('/functions/v1/delete-build')) return jsonResponse(200, { success: true });
+      throw new Error(`unexpected fetch ${options.method} ${u}`);
+    };
+    process.exit = (code) => { throw new ExitCalled(code); };
+    console.log = (...a) => out.push(a.join(' '));
+    console.error = (...a) => out.push(a.join(' '));
+
+    delete require.cache[require.resolve('../src/commands/projects')];
+    projects = require('../src/commands/projects');
+  });
+
+  afterEach(() => {
+    for (const k of Object.keys(saved)) {
+      if (k === 'fetch') global.fetch = saved.fetch;
+      else if (k === 'exit') process.exit = saved.exit;
+      else if (k === 'log') console.log = saved.log;
+      else if (k === 'error') console.error = saved.error;
+      else supabase[k] = saved[k];
+    }
+    process.chdir(originalCwd);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function run(fnToRun) {
+    try {
+      await fnToRun();
+      return 0;
+    } catch (err) {
+      if (err instanceof ExitCalled) return err.code;
+      throw err;
+    }
+  }
+
+  test('without --strict: prints mapped diagnostics and publishes', async () => {
+    assert.equal(await run(() => projects.deploy('uuid', 'tok', {})), 0);
+    assert.ok(out.includes('landing.page:5:1: warning: Image has no alt text [missing-alt]'));
+    const patch = calls.find((c) => c.method === 'PATCH');
+    assert.deepEqual(patch.body, { json_content: { pages: [] } });
+    assert.equal(published.length, 1);
+  });
+
+  test('--strict with a warning: exits 1, no PATCH, deletes the build, does not publish', async () => {
+    assert.equal(await run(() => projects.deploy('uuid', 'tok', { strict: true })), 1);
+    assert.equal(calls.filter((c) => c.method === 'PATCH').length, 0);
+    assert.ok(calls.some((c) => c.url.endsWith('/functions/v1/delete-build')));
+    assert.equal(published.length, 0);
+    assert.ok(out.includes('Build not saved: --strict found 1 warning.'));
   });
 });

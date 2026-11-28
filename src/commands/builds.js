@@ -14,7 +14,8 @@ const {
   uploadAssetsWithToken,
 } = require('../supabase');
 const { getProjectConfig, setProjectConfig } = require('../auth');
-const { readPageFilesFromDir, readLlmsTxtFromDir } = require('../parser');
+const { readPageFilesWithMap, readLlmsTxtFromDir } = require('../parser');
+const { splitParseResponse, reportDiagnostics, strictFailureMessage } = require('../diagnostics');
 const { BUILD_COMPILER_URL, projectUrl } = require('../config');
 const { formatTable, formatDate } = require('../utils');
 
@@ -56,13 +57,14 @@ async function parseContent(rawContent, projectId, buildId) {
       project_id: projectId,
       build_id: buildId || null,
       version: '2',
+      diagnostics: true,
     }),
   });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Parser error: ${text}`);
   }
-  return res.json();
+  return splitParseResponse(await res.json());
 }
 
 function requireProjectConfig(cwd) {
@@ -138,8 +140,10 @@ async function push(options = {}) {
   const config = requireProjectConfig(cwd);
 
   let rawContent;
+  let lineMap;
   try {
-    rawContent = readPageFilesFromDir(cwd);
+    lineMap = readPageFilesWithMap(cwd);
+    rawContent = lineMap.text;
   } catch (err) {
     console.error(err.message);
     process.exit(1);
@@ -207,10 +211,18 @@ async function push(options = {}) {
   // Parse content via parser API
   console.log('Parsing content…');
   let jsonContent;
+  let diagnostics;
   try {
-    jsonContent = await parseContent(rawContent, config.projectId, build.id);
+    ({ json: jsonContent, diagnostics } = await parseContent(rawContent, config.projectId, build.id));
   } catch (err) {
     console.error('Parse failed:', err.message);
+    if (!isDraft) await discardBuild(build.id);
+    process.exit(1);
+  }
+
+  const failures = reportDiagnostics(diagnostics, lineMap, { strict: !!options.strict });
+  if (failures.length > 0) {
+    console.error(strictFailureMessage(failures));
     if (!isDraft) await discardBuild(build.id);
     process.exit(1);
   }

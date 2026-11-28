@@ -89,6 +89,7 @@ projectCmd
   .command('publish')
   .description('Push local content and publish it live — alias for `micropage publish`')
   .option('-w, --watch', 'Stream build/deploy events after triggering publish')
+  .option('--strict', 'Fail when the parser reports errors or warnings; hints never fail')
   .action((opts) => builds.publish(opts));
 
 projectCmd
@@ -110,6 +111,7 @@ projectCmd
     '--watch-with-deploy-token',
     'Use the deploy token for the event stream instead of the exchanged JWT',
   )
+  .option('--strict', 'Fail when the parser reports errors or warnings; hints never fail')
   .action((projectUuid, token, opts) => {
     // If only one positional arg was given, it is the token; read UUID from project config.
     if (token === undefined) {
@@ -148,12 +150,14 @@ buildCmd
 program
   .command('push')
   .description('Merge local .page files and save as a draft build')
-  .action(() => builds.push());
+  .option('--strict', 'Fail when the parser reports errors or warnings; hints never fail')
+  .action((opts) => builds.push(opts));
 
 program
   .command('publish')
   .description('Push local content and publish it live')
   .option('-w, --watch', 'Stream build/deploy events after triggering publish')
+  .option('--strict', 'Fail when the parser reports errors or warnings; hints never fail')
   .action((opts) => builds.publish(opts));
 
 // ---------------------------------------------------------------------------

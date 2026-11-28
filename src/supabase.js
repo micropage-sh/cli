@@ -721,9 +721,12 @@ async function uploadAssetsWithToken(accessToken, projectId, cwd, onProgress) {
  * (e.g. from exchangeDeployTokenForAccessToken). The row is created first so the parser
  * stamps the build's own id into json_content; if parsing or the update fails, the empty
  * row is removed (best-effort) and the error rethrown.
+ * `options.onDiagnostics(diagnostics)` receives the parser's diagnostics (null when the
+ * parser sent none); with `options.strict`, errors or warnings throw a
+ * StrictDiagnosticsError before json_content is stored, and the row is removed.
  * Returns the created build row (`{ id, number, status }`).
  */
-async function pushWithToken(accessToken, projectId, rawContent, buildCompilerUrl) {
+async function pushWithToken(accessToken, projectId, rawContent, buildCompilerUrl, options = {}) {
   const { BUILD_COMPILER_URL } = require('./config');
   const url = buildCompilerUrl || BUILD_COMPILER_URL;
 
@@ -756,13 +759,20 @@ async function pushWithToken(accessToken, projectId, rawContent, buildCompilerUr
         project_id: projectId,
         build_id: build.id,
         version: '2',
+        diagnostics: true,
       }),
     });
     if (!parseRes.ok) {
       const t = await parseRes.text();
       throw new Error(`Parser error: ${t}`);
     }
-    const jsonContent = await parseRes.json();
+    const { splitParseResponse, strictFailures, StrictDiagnosticsError } = require('./diagnostics');
+    const { json: jsonContent, diagnostics } = splitParseResponse(await parseRes.json());
+    if (options.onDiagnostics) options.onDiagnostics(diagnostics);
+    if (options.strict) {
+      const failures = strictFailures(diagnostics);
+      if (failures.length > 0) throw new StrictDiagnosticsError(failures);
+    }
 
     const updated = await requestWithToken(
       'PATCH',

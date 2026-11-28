@@ -1,16 +1,29 @@
 const fs = require('fs');
 const path = require('path');
 
+function countNewlines(s) {
+  let n = 0;
+  for (let i = s.indexOf('\n'); i !== -1; i = s.indexOf('\n', i + 1)) n++;
+  return n;
+}
+
 /**
- * Read and merge .page files from a directory.
+ * Read and merge .page files from a directory, keeping a map from lines of the
+ * merged text back to the file they came from.
  *
  * Merge order:
- *   1. landing.page  (canonical primary file, if present)
- *   2. All other *.page files sorted lexicographically
+ *   1. landing.page  (canonical primary file, if present, kept even when empty)
+ *   2. All other non-empty *.page files sorted lexicographically
  *
- * Files are joined with a single blank line separator.
+ * Each file is trimmed and files are joined with a single blank line separator.
+ *
+ * Returns `{ text, files }`, where each file entry is
+ * `{ name, startLine, lineCount, leadingLines }`: `startLine` is the 1-based
+ * line in `text` where the file's trimmed content starts, `lineCount` how many
+ * lines it spans there, and `leadingLines` how many lines `trim()` removed from
+ * the top of the file.
  */
-function readPageFilesFromDir(dir) {
+function readPageFilesWithMap(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   const primary = path.join(dir, 'landing.page');
   const others = [];
@@ -22,20 +35,48 @@ function readPageFilesFromDir(dir) {
   }
   others.sort();
 
+  const sources = [];
+  if (fs.existsSync(primary)) sources.push({ file: primary, keepEmpty: true });
+  for (const f of others) sources.push({ file: f, keepEmpty: false });
+
   const parts = [];
-  if (fs.existsSync(primary)) {
-    parts.push(fs.readFileSync(primary, 'utf8').trim());
-  }
-  for (const f of others) {
-    const content = fs.readFileSync(f, 'utf8').trim();
-    if (content) parts.push(content);
+  const files = [];
+  let startLine = 1;
+  for (const { file, keepEmpty } of sources) {
+    const raw = fs.readFileSync(file, 'utf8');
+    const content = raw.trim();
+    if (!content && !keepEmpty) continue;
+    const lineCount = countNewlines(content) + 1;
+    const leadingLines = content ? countNewlines(raw.slice(0, raw.length - raw.trimStart().length)) : 0;
+    parts.push(content);
+    files.push({ name: path.basename(file), startLine, lineCount, leadingLines });
+    // +1 for the blank separator line the join inserts.
+    startLine += lineCount + 1;
   }
 
   if (parts.length === 0) {
     throw new Error('No .page files found');
   }
 
-  return parts.join('\n\n');
+  return { text: parts.join('\n\n'), files };
+}
+
+function readPageFilesFromDir(dir) {
+  return readPageFilesWithMap(dir).text;
+}
+
+/**
+ * Map a 1-based line of the merged text to `{ file, line }` in the source file.
+ * Returns null for the blank separator lines and lines past the end.
+ */
+function mapLine(map, line) {
+  if (!map || !Array.isArray(map.files) || !Number.isInteger(line)) return null;
+  for (const f of map.files) {
+    if (line >= f.startLine && line < f.startLine + f.lineCount) {
+      return { file: f.name, line: line - f.startLine + 1 + f.leadingLines };
+    }
+  }
+  return null;
 }
 
 /**
@@ -78,6 +119,8 @@ function listAssetsFromDir(dir) {
 
 module.exports = {
   readPageFilesFromDir,
+  readPageFilesWithMap,
+  mapLine,
   writePageFile,
   listAssetsFromDir,
   readLlmsTxtFromDir,
